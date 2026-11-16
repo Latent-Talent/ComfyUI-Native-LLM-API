@@ -12,6 +12,8 @@ import folder_paths
 from server import PromptServer
 import execution
 from . import native_llm_config as config
+from . import streaming
+from . import sillytavern as st
 
 LOG = logging.getLogger("native_llm_api")
 PREFIX = "/native_llm_api"
@@ -75,22 +77,29 @@ def _validate_body(body, settings, chat):
         raise APIError(404, "Select an installed text encoder model in Native LLM API settings", code="model_not_found")
     if type(body.get("n", 1)) is not int or body.get("n", 1) != 1:
         raise APIError(400, "Only n=1 is supported", code="unsupported_parameter")
-    if body.get("response_format") not in (None, {"type": "text"}):
-        raise APIError(400, "Only response_format type=text is supported", code="unsupported_parameter")
-    for field in ("tools", "functions", "logprobs", "top_logprobs", "logit_bias", "tool_choice"):
+    response_format = body.get("response_format") or {"type": "text"}
+    if response_format not in ({"type": "text"}, {"type": "json_object"}):
+        raise APIError(400, "Only text and json_object response formats are supported")
+    for field in ("logprobs", "top_logprobs", "logit_bias"):
         if field in body and body[field] not in (None, [], {}):
             raise APIError(400, f"{field} is not supported by this native backend", code="unsupported_parameter")
     stream_opts = body.get("stream_options")
     if stream_opts is not None and not isinstance(stream_opts, dict):
         raise APIError(400, "stream_options must be an object")
-    if stream_opts and stream_opts.get("include_usage"):
-        raise APIError(400, "Streaming token usage is not available", code="unsupported_parameter")
+    if stream_opts and type(stream_opts.get("include_usage", False)) is not bool:
+        raise APIError(400, "include_usage must be boolean")
+    if body.get("frequency_penalty") not in (None, 0):
+        raise APIError(400, "frequency_penalty is unavailable in native ComfyUI; use repetition_penalty")
+    try:
+        tools, tool_choice = st.parse_tool_options(body) if chat else ({}, "none")
+    except st.CompatibilityError as exc:
+        raise APIError(400, str(exc)) from exc
     effective = dict(settings)
     mapping = {"max_tokens": "max_tokens", "max_completion_tokens": "max_tokens",
                "temperature": "temperature", "top_p": "top_p", "top_k": "top_k",
                "min_p": "min_p", "repetition_penalty": "repetition_penalty",
                "presence_penalty": "presence_penalty", "seed": "seed",
-               "thinking": "thinking", "mtp": "mtp"}
+               "thinking": "thinking", "mtp": "mtp", "rep_pen": "repetition_penalty"}
     for source, target in mapping.items():
         if source in body and body[source] is not None:
             effective[target] = body[source]
@@ -115,16 +124,32 @@ def _validate_body(body, settings, chat):
         raise APIError(400, "thinking must be boolean")
     if chat:
         prompt = render_chat(body.get("messages"), model, effective["thinking"])
+        if tool_choice != "none":
+            instructions = st.tool_instructions(tools, tool_choice)
+            prompt = instructions + "\n" + prompt
+        if response_format["type"] == "json_object":
+            prompt = "Return exactly one valid JSON object without markdown.\n" + prompt
     else:
         prompt = body.get("prompt")
         if not isinstance(prompt, str):
             raise APIError(400, "prompt must be a string")
+        if response_format["type"] == "json_object":
+            prompt += "\nReturn only one valid JSON object."
     stops = body.get("stop", [])
     if isinstance(stops, str):
         stops = [stops]
     if not isinstance(stops, list) or len(stops) > 8 or any(not isinstance(s, str) for s in stops):
         raise APIError(400, "stop must be a string or a list of up to eight strings")
-    return model, prompt, effective, stops
+    if len(prompt) > 250000:
+        raise APIError(400, "Prompt is too long")
+    if len(stops) > 8 or any(len(x) > 128 for x in stops):
+        raise APIError(400, "Stop sequences must be at most 128 characters")
+    if response_format["type"] == "json_object" and tool_choice != "none":
+        raise APIError(400, "json_object mode and tools cannot be combined")
+    metadata = {"tools": tools, "tool_choice": tool_choice, "format": response_format["type"],
+                "include_usage": bool(stream_opts and stream_opts.get("include_usage")),
+                "include_reasoning": body.get("include_reasoning", True) is not False}
+    return model, prompt, effective, stops, metadata
 
 def render_chat(messages, model, thinking=False):
     if not isinstance(messages, list) or not messages or len(messages) > 256:
@@ -165,12 +190,13 @@ def make_prompt(model, prompt, options, request_id):
         mode["seed"] = options.get("seed", secrets.randbits(32))
     return {
         "1": {"class_type": "CLIPLoader", "inputs": {"clip_name": model, "type": "stable_diffusion"}},
-        "2": {"class_type": "TextGenerateV2", "inputs": {
+        "2": {"class_type": "NativeLLMAPITextGenerate", "inputs": {
             "clip": ["1", 0], "prompt": prompt, "max_length": int(options["max_tokens"]),
             "sampling_mode": mode, "thinking": options["thinking"],
-            "use_default_template": options["use_default_template"], "mtp": options["mtp"]}},
+            "use_default_template": options["use_default_template"], "mtp": options["mtp"],
+            "request_id": request_id}},
         "3": {"class_type": "NativeLLMAPIOutput", "inputs": {
-            "text": ["2", 0], "request_id": request_id}},
+            "text": ["2", 0], "reasoning": ["2", 1], "request_id": request_id}},
     }
 
 async def submit(prompt):
@@ -197,7 +223,8 @@ def get_output(prompt_id):
     value = outputs.get("3", {}).get("text")
     if not value:
         raise APIError(500, "ComfyUI returned no output from the native LLM node", "server_error")
-    return str(value[0])
+    reason = outputs.get("3", {}).get("reasoning") or [""]
+    return str(value[0]), str(reason[0])
 
 async def cancel(prompt_id):
     ps = PromptServer.instance
