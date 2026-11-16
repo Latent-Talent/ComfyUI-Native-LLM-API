@@ -196,7 +196,7 @@ def make_prompt(model, prompt, options, request_id):
     # when NativeLLMAPITextGenerate.execute() is called.
     sampling_enabled = bool(options["sampling"] and options["temperature"] != 0)
     generation_inputs = {
-        "clip": ["1", 0], "prompt": prompt, "max_length": int(options["max_tokens"]),
+        "clip": ["1", 0], "prompt": "", "max_length": int(options["max_tokens"]),
         "sampling_mode": "on" if sampling_enabled else "off",
         "thinking": options["thinking"],
         "use_default_template": options["use_default_template"],
@@ -229,6 +229,7 @@ async def submit(prompt):
     return prompt_id
 
 def get_output(prompt_id):
+    """Read completion marker from ComfyUI, actual content from private memory."""
     ps = PromptServer.instance
     entry = ps.prompt_queue.get_history(prompt_id=prompt_id).get(prompt_id)
     if not entry:
@@ -237,11 +238,22 @@ def get_output(prompt_id):
     if status.get("status_str") == "error":
         raise APIError(500, "ComfyUI native LLM execution failed; see ComfyUI console", "server_error")
     outputs = entry.get("outputs") or {}
-    value = outputs.get("3", {}).get("text")
-    if not value:
-        raise APIError(500, "ComfyUI returned no output from the native LLM node", "server_error")
-    reason = outputs.get("3", {}).get("reasoning") or [""]
-    return str(value[0]), str(reason[0])
+    marker = (outputs.get("3") or {}).get("status") or []
+    if marker != ["completed"]:
+        raise APIError(500, "Native LLM did not return a completion marker", "server_error")
+    workflow = entry.get("prompt") or []
+    # ComfyUI /history prompt tuple includes the sanitized workflow, not user text.
+    try:
+        request_id = workflow[2]["3"]["inputs"]["request_id"]
+    except (IndexError, KeyError, TypeError):
+        raise APIError(500, "Native LLM output request ID is unavailable", "server_error")
+    session = streaming.lookup(request_id)
+    if session is None:
+        raise APIError(500, "Native LLM request session expired", "server_error")
+    snap = session.snapshot()
+    if not snap["generation_completed"]:
+        raise APIError(500, "Native LLM finished without output", "server_error")
+    return snap["content"], snap["reasoning"]
 
 async def cancel(prompt_id):
     ps = PromptServer.instance
@@ -418,6 +430,7 @@ async def inference(request, chat):
     session = None
     try:
         session = streaming.register(rid, thinking=effective["thinking"], stops=stops)
+        session.prompt = prompt
         prompt_id = await submit(make_prompt(model, prompt, effective, rid))
         created = int(time.time())
         response_id = ("chatcmpl-" if chat else "cmpl-") + rid
