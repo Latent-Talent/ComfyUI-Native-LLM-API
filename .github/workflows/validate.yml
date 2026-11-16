@@ -1,0 +1,17 @@
+name: Validate custom node
+on:
+  push:
+  pull_request:
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Python source syntax
+        run: python -m compileall -q __init__.py api.py native_llm_config.py
+      - name: Check JavaScript syntax
+        run: |
+          cp web/native_llm_api.js /tmp/native_llm_api.mjs
+          node --check /tmp/native_llm_api.mjs
+      - name: Validate config persistence and inputs
+        run: python -m unittest discover -s tests -v
