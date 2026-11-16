@@ -123,12 +123,10 @@ def _validate_body(body, settings, chat):
     if not isinstance(effective["thinking"], bool):
         raise APIError(400, "thinking must be boolean")
     if chat:
-        prompt = render_chat(body.get("messages"), model, effective["thinking"])
-        if tool_choice != "none":
-            instructions = st.tool_instructions(tools, tool_choice)
-            prompt = instructions + "\n" + prompt
+        instructions = st.tool_instructions(tools, tool_choice)
         if response_format["type"] == "json_object":
-            prompt = "Return exactly one valid JSON object without markdown.\n" + prompt
+            instructions += "\nReturn exactly one valid JSON object without markdown."
+        prompt = render_chat(body.get("messages"), model, effective["thinking"], extra_system=instructions)
     else:
         prompt = body.get("prompt")
         if not isinstance(prompt, str):
@@ -151,7 +149,7 @@ def _validate_body(body, settings, chat):
                 "include_reasoning": body.get("include_reasoning", True) is not False}
     return model, prompt, effective, stops, metadata
 
-def render_chat(messages, model, thinking=False):
+def render_chat(messages, model, thinking=False, extra_system=""):
     if not isinstance(messages, list) or not messages or len(messages) > 256:
         raise APIError(400, "messages must be a nonempty array of at most 256 messages")
     parsed = []
@@ -159,9 +157,11 @@ def render_chat(messages, model, thinking=False):
         if not isinstance(message, dict):
             raise APIError(400, "Each message must be an object")
         role = message.get("role")
-        if role not in ("system", "developer", "user", "assistant"):
+        if role not in ("system", "developer", "user", "assistant", "tool", "function"):
             raise APIError(400, f"Unsupported role: {role}")
-        content = message.get("content")
+        content = message.get("content", "")
+        if content is None:
+            content = ""
         if isinstance(content, list):
             parts = []
             for item in content:
@@ -172,8 +172,13 @@ def render_chat(messages, model, thinking=False):
         if not isinstance(content, str):
             raise APIError(400, "Message content must be text")
         if message.get("tool_calls"):
-            raise APIError(400, "Tool calls are not supported")
+            content += "\nPrevious function calls: " + json.dumps(message["tool_calls"], ensure_ascii=False)
+        if role in ("tool", "function"):
+            content = str(message.get("name", message.get("tool_call_id", "tool"))) + ": " + content
+            role = "tool"
         parsed.append((role, content))
+    if extra_system:
+        parsed.insert(0, ("system", extra_system))
     # Qwen3.5 native tokenizer recognizes this prefix and does not wrap it a second time.
     if "qwen35" in model.lower() or "qwen3.5" in model.lower() or "qwen38" in model.lower() or "qwen3.8" in model.lower():
         messages_text = "".join(f"<|im_start|>{'system' if r == 'developer' else r}\n{v}<|im_end|>\n" for r, v in parsed)
