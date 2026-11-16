@@ -32,7 +32,7 @@ class NativeLLMAPITextGenerate(TextGenerateV2):
         def capturing_generate(*args, **kwargs):
             ids = original_generate(*args, **kwargs)
             if session is not None and isinstance(ids, list):
-                session.feed(ids, clip.decode)
+                session.feed(ids, clip.decode, force=True)
             return ids
 
         def capturing_tokenize(*args, **kwargs):
