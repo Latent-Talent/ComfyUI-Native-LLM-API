@@ -25,7 +25,31 @@ class NativeLLMAPITextGenerate(TextGenerateV2):
                 image=None, thinking=False, use_default_template=True, video=None, audio=None,
                 mtp="auto", system_prompt="", images=None, videos=None, audios=None):
         session = lookup(request_id)
-        with native_capture(request_id, clip):
+        # Also capture final accepted IDs: MTP can finish without a progress update.
+        original_generate = clip.generate
+        original_tokenize = clip.tokenize
+
+        def capturing_generate(*args, **kwargs):
+            ids = original_generate(*args, **kwargs)
+            if session is not None and isinstance(ids, list):
+                session.feed(ids, clip.decode)
+            return ids
+
+        def capturing_tokenize(*args, **kwargs):
+            tokens = original_tokenize(*args, **kwargs)
+            if session is not None:
+                from .streaming import _prompt_token_count
+                count = _prompt_token_count(tokens)
+                if count is not None:
+                    with session.lock:
+                        session.prompt_tokens = count
+            return tokens
+
+        if session is not None:
+            clip.generate = capturing_generate
+            clip.tokenize = capturing_tokenize
+        try:
+          with native_capture(request_id, clip):
             try:
                 result = TextGenerateV2.execute(
                     clip=clip, prompt=prompt, max_length=max_length,
@@ -53,6 +77,10 @@ class NativeLLMAPITextGenerate(TextGenerateV2):
                 if session is not None:
                     session.fail(str(error))
                 raise
+        finally:
+            if session is not None:
+                clip.generate = original_generate
+                clip.tokenize = original_tokenize
 
 
 class NativeLLMAPIOutput:
