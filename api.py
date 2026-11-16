@@ -268,63 +268,167 @@ def sse_chunk(rid, created, model, chat, text="", finish=None):
     return {"id": rid, "object": "chat.completion.chunk" if chat else "text_completion",
             "created": created, "model": model, "choices": choices}
 
-async def inference(request, chat):
-    settings = config.read()
-    authed(request, settings)
+def _compat_result(content, reasoning, metadata, model, response_id, created, chat, session):
+    tool_calls = None
     try:
-        body = await request.json()
-    except (ValueError, TypeError):
-        raise APIError(400, "Invalid JSON body")
-    model, prompt, effective, stops = _validate_body(body, settings, chat)
-    if len(prompt) > 250000:
-        raise APIError(400, "Prompt exceeds the maximum accepted characters")
-    async with _PENDING_LOCK:
-        if len(_PENDING) >= settings["max_pending"]:
-            raise APIError(429, "Native LLM API queue is full", "rate_limit_error")
-        rid = str(uuid.uuid4())
-        _PENDING.add(rid)
-    prompt_id = None
+        if chat:
+            tool_calls = st.parse_tool_calls(content, metadata["tools"], metadata["tool_choice"])
+        if tool_calls is None and metadata["format"] == "json_object":
+            st.validate_json_object(content)
+    except st.CompatibilityError as exc:
+        raise APIError(422, str(exc)) from exc
+    snap = session.snapshot()
+    return st.format_response(content, reasoning, model, response_id, created, chat,
+                              snap["finish_reason"] or "stop", st.count_usage(session),
+                              metadata["include_reasoning"], tool_calls)
+
+
+async def _sse_write(response, payload):
+    await response.write(("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode())
+
+
+async def _stream_response(request, prompt_id, model, response_id, created, chat, session,
+                           stops, metadata, timeout_seconds):
+    response = web.StreamResponse(status=200, headers={
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+    })
+    await response.prepare(request)
+    sent_text = ""
+    sent_reasoning = ""
+    last_ping = time.monotonic()
+    deadline = time.monotonic() + timeout_seconds
+    buffer_tool_calls = metadata["tool_choice"] != "none"
+    # Decoding a partial UTF-8/token sequence can revise its tail. Hold it back.
+    holdback = max(24, max((len(stop) for stop in stops), default=0))
     try:
-        workflow = make_prompt(model, prompt, effective, rid)
-        prompt_id = await submit(workflow)
-        created = int(time.time())
-        response_id = ("chatcmpl-" if chat else "cmpl-") + rid
-        streaming = body.get("stream", False)
-        if not streaming:
-            result = await await_output(prompt_id, settings["timeout_seconds"], request)
-            text, reason = stop_text(result, stops)
-            return web.json_response(format_answer(text, response_id, created, model, chat, reason))
-        response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-        await response.prepare(request)
-        deadline = time.monotonic() + settings["timeout_seconds"]
+        if chat:
+            await _sse_write(response, st.stream_chunk(response_id, created, model, True, {"role": "assistant"}))
         while True:
-            output = get_output(prompt_id)
-            if output is not None:
-                answer, reason = stop_text(output, stops)
-                # Buffered SSE: native generate has no stable token streaming callback.
-                first = sse_chunk(response_id, created, model, chat, answer)
-                final = sse_chunk(response_id, created, model, chat, finish=reason or "stop")
-                await response.write(("data: " + json.dumps(first) + "\n\n").encode())
-                await response.write(("data: " + json.dumps(final) + "\n\n").encode())
+            final = get_output(prompt_id)
+            snap = session.snapshot()
+            if snap["error"]:
+                raise APIError(500, "Native generation failed: " + snap["error"], "server_error")
+            if time.monotonic() > deadline:
+                raise APIError(504, "Native generation timed out", "server_error")
+            completed = final is not None
+            if completed:
+                content, reasoning = final
+                index, _ = streaming.first_stop(content, stops)
+                if index is not None:
+                    content = content[:index]
+                # Check function JSON/schema before any final response.
+                response_obj = _compat_result(content, reasoning, metadata, model,
+                                              response_id, created, chat, session)
+                calls = response_obj["choices"][0].get("message", {}).get("tool_calls") if chat else None
+            else:
+                content, reasoning = snap["content"], snap["reasoning"]
+                calls = None
+            if not buffer_tool_calls:
+                if chat and metadata["include_reasoning"]:
+                    safe = reasoning if completed else reasoning[:max(0, len(reasoning) - holdback)]
+                    if not safe.startswith(sent_reasoning):
+                        raise APIError(500, "Native reasoning decode revised emitted text", "server_error")
+                    if len(safe) > len(sent_reasoning):
+                        await _sse_write(response, st.stream_chunk(
+                            response_id, created, model, True,
+                            {"reasoning_content": safe[len(sent_reasoning):]}))
+                        sent_reasoning = safe
+                safe = content if completed else content[:max(0, len(content) - holdback)]
+                if not safe.startswith(sent_text):
+                    raise APIError(500, "Native token decode revised emitted text", "server_error")
+                if len(safe) > len(sent_text):
+                    await _sse_write(response, st.stream_chunk(
+                        response_id, created, model, chat, {"content": safe[len(sent_text):]}))
+                    sent_text = safe
+            if completed:
+                if buffer_tool_calls:
+                    if chat and metadata["include_reasoning"] and reasoning:
+                        await _sse_write(response, st.stream_chunk(
+                            response_id, created, model, True, {"reasoning_content": reasoning}))
+                    if calls:
+                        await _sse_write(response, st.stream_chunk(
+                            response_id, created, model, True, {"tool_calls": [
+                                {"index": i, "id": call["id"], "type": "function",
+                                 "function": call["function"]} for i, call in enumerate(calls)]}))
+                    elif content:
+                        await _sse_write(response, st.stream_chunk(
+                            response_id, created, model, chat, {"content": content}))
+                finish = "tool_calls" if calls else snap["finish_reason"] or "stop"
+                await _sse_write(response, st.stream_chunk(response_id, created, model, chat, finish=finish))
+                if metadata["include_usage"]:
+                    usage = st.count_usage(session)
+                    if usage is not None:
+                        await _sse_write(response, {"id": response_id,
+                            "object": "chat.completion.chunk" if chat else "text_completion",
+                            "created": created, "model": model, "choices": [], "usage": usage})
                 await response.write(b"data: [DONE]\n\n")
                 await response.write_eof()
                 return response
-            if time.monotonic() >= deadline:
-                await response.write(b"event: error\ndata: {\"error\":\"Native generation timed out\"}\n\n")
-                return response
-            await response.write(b": waiting for native ComfyUI generation\n\n")
-            await asyncio.sleep(2)
-    except (asyncio.CancelledError, ConnectionError, ConnectionResetError):
-        if prompt_id:
-            await cancel(prompt_id)
+            now = time.monotonic()
+            if now - last_ping > 10:
+                await response.write(b": native generation active\n\n")
+                last_ping = now
+            if request.transport is None or request.transport.is_closing():
+                raise asyncio.CancelledError()
+            await asyncio.sleep(0.07)
+    except (ConnectionError, ConnectionResetError, asyncio.CancelledError):
         raise
-    except Exception:
-        if prompt_id:
-            await cancel(prompt_id)
-        raise
+    except Exception as exc:
+        # The stream has already sent 200; send a structured error event instead of
+        # trying to overwrite headers with JSON. The caller will cancel the prompt.
+        error = {"error": {"message": str(exc), "type": "server_error"}}
+        try:
+            await response.write(("event: error\ndata: " + json.dumps(error) + "\n\n").encode())
+            await response.write_eof()
+        except (ConnectionError, ConnectionResetError):
+            pass
+        session.cancelled = True
+        await cancel(prompt_id)
+        return response
+
+
+async def inference(request, chat):
+    settings = config.read()
+    authed(request, settings)
+    body = await request.json()
+    model, prompt, effective, stops, metadata = _validate_body(body, settings, chat)
+    rid = str(uuid.uuid4())
+    async with _PENDING_LOCK:
+        if len(_PENDING) >= settings["max_pending"]:
+            raise APIError(429, "Native LLM API queue is full", "rate_limit_error")
+        _PENDING.add(rid)
+    prompt_id = None
+    succeeded = False
+    session = None
+    try:
+        session = streaming.register(rid, thinking=effective["thinking"], stops=stops)
+        prompt_id = await submit(make_prompt(model, prompt, effective, rid))
+        created = int(time.time())
+        response_id = ("chatcmpl-" if chat else "cmpl-") + rid
+        if body.get("stream", False):
+            result = await _stream_response(request, prompt_id, model, response_id, created,
+                                            chat, session, stops, metadata, settings["timeout_seconds"])
+            succeeded = True
+            return result
+        result = await await_output(prompt_id, settings["timeout_seconds"], request)
+        content, reasoning = result
+        if session.snapshot()["finish_reason"] is None:
+            session.finish(content, reasoning, max_tokens=effective["max_tokens"])
+        index, _ = streaming.first_stop(content, stops)
+        if index is not None:
+            content = content[:index]
+        answer = _compat_result(content, reasoning, metadata, model, response_id, created, chat, session)
+        succeeded = True
+        return web.json_response(answer)
     finally:
+        if prompt_id and not succeeded:
+            if session is not None:
+                session.cancelled = True
+            await cancel(prompt_id)
+        streaming.release(rid)
         _PENDING.discard(rid)
+
 
 async def models_handler(request):
     authed(request, config.read())
