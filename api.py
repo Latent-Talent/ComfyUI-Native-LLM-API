@@ -190,18 +190,28 @@ def render_chat(messages, model, thinking=False, extra_system=""):
     return "\n\n".join(f"{r.upper()}:\n{v}" for r, v in parsed) + "\n\nASSISTANT:\n"
 
 def make_prompt(model, prompt, options, request_id):
-    mode = {"sampling_mode": "on" if options["sampling"] and options["temperature"] != 0 else "off"}
-    if mode["sampling_mode"] == "on":
-        mode.update({k: options[k] for k in (
-            "temperature", "top_k", "top_p", "min_p", "repetition_penalty", "presence_penalty")})
-        mode["seed"] = options.get("seed", secrets.randbits(32))
+    # ComfyUI V3 DynamicCombo is serialized as the selected STRING option
+    # plus dotted child keys. A nested dict at the top level is silently
+    # discarded by get_finalized_class_inputs(), causing a missing argument
+    # when NativeLLMAPITextGenerate.execute() is called.
+    sampling_enabled = bool(options["sampling"] and options["temperature"] != 0)
+    generation_inputs = {
+        "clip": ["1", 0], "prompt": prompt, "max_length": int(options["max_tokens"]),
+        "sampling_mode": "on" if sampling_enabled else "off",
+        "thinking": options["thinking"],
+        "use_default_template": options["use_default_template"],
+        "mtp": options["mtp"], "request_id": request_id,
+    }
+    if sampling_enabled:
+        for key in ("temperature", "top_k", "top_p", "min_p",
+                    "repetition_penalty", "presence_penalty"):
+            generation_inputs[f"sampling_mode.{key}"] = options[key]
+        generation_inputs["sampling_mode.seed"] = (
+            options["seed"] if options.get("seed") is not None else secrets.randbits(32)
+        )
     return {
         "1": {"class_type": "CLIPLoader", "inputs": {"clip_name": model, "type": "stable_diffusion"}},
-        "2": {"class_type": "NativeLLMAPITextGenerate", "inputs": {
-            "clip": ["1", 0], "prompt": prompt, "max_length": int(options["max_tokens"]),
-            "sampling_mode": mode, "thinking": options["thinking"],
-            "use_default_template": options["use_default_template"], "mtp": options["mtp"],
-            "request_id": request_id}},
+        "2": {"class_type": "NativeLLMAPITextGenerate", "inputs": generation_inputs},
         "3": {"class_type": "NativeLLMAPIOutput", "inputs": {
             "text": ["2", 0], "reasoning": ["2", 1], "request_id": request_id}},
     }
