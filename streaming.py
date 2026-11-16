@@ -39,6 +39,8 @@ class CaptureSession:
     """One HTTP request. Latest snapshot only: no unbounded token queues."""
     def __init__(self, request_id, *, thinking=False, stops=()):
         self.request_id = request_id
+        # The sensitive request lives only in process memory; never in ComfyUI's prompt graph/history.
+        self.prompt = None
         self.thinking = thinking
         self.stops = tuple(stops)
         self.lock = threading.Lock()
