@@ -6,6 +6,7 @@ WEB_DIRECTORY = "./web"
 from comfy_api.latest import io
 from comfy_extras.nodes_textgen import TextGenerateV2
 from .streaming import native_capture, lookup, StopAtSequence, GenerationCancelled
+from . import kernel_fallback
 
 
 class NativeLLMAPITextGenerate(TextGenerateV2):
@@ -29,6 +30,8 @@ class NativeLLMAPITextGenerate(TextGenerateV2):
             raise RuntimeError("Native LLM API request expired or unavailable")
         # Retrieve private text by opaque ID, never from history-visible workflow inputs.
         prompt = session.prompt
+        # Configure a native two-pass fallback only for a known Kitchen CUDA launch error.
+        kernel_fallback.install()
         # Also capture final accepted IDs: MTP can finish without a progress update.
         original_generate = clip.generate
         original_tokenize = clip.tokenize
