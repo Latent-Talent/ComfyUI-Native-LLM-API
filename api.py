@@ -81,7 +81,7 @@ def _validate_body(body, settings, chat):
     if response_format not in ({"type": "text"}, {"type": "json_object"}):
         raise APIError(400, "Only text and json_object response formats are supported")
     for field in ("logprobs", "top_logprobs", "logit_bias"):
-        if field in body and body[field] not in (None, [], {}):
+        if field in body and body[field] not in (None, False, 0, [], {}):
             raise APIError(400, f"{field} is not supported by this native backend", code="unsupported_parameter")
     stream_opts = body.get("stream_options")
     if stream_opts is not None and not isinstance(stream_opts, dict):
@@ -134,6 +134,8 @@ def _validate_body(body, settings, chat):
         if response_format["type"] == "json_object":
             prompt += "\nReturn only one valid JSON object."
     stops = body.get("stop", [])
+    if stops is None:
+        stops = []
     if isinstance(stops, str):
         stops = [stops]
     if not isinstance(stops, list) or len(stops) > 8 or any(not isinstance(s, str) for s in stops):
@@ -391,7 +393,10 @@ async def _stream_response(request, prompt_id, model, response_id, created, chat
 async def inference(request, chat):
     settings = config.read()
     authed(request, settings)
-    body = await request.json()
+    try:
+        body = await request.json()
+    except (ValueError, TypeError) as exc:
+        raise APIError(400, "Invalid JSON request body") from exc
     model, prompt, effective, stops, metadata = _validate_body(body, settings, chat)
     rid = str(uuid.uuid4())
     async with _PENDING_LOCK:
