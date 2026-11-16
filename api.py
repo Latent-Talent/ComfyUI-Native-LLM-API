@@ -44,7 +44,7 @@ def models():
     return sorted(name for name in folder_paths.get_filename_list("text_encoders")
                   if name.lower().endswith((".safetensors", ".sft", ".ckpt", ".pt", ".pth")))
 
-def get_settings(request):
+async def get_settings(request):
     return web.json_response({"settings": config.read(), "models": models(), "base_url": f"{request.scheme}://{request.host}/v1"})
 
 async def save_settings(request):
@@ -73,12 +73,17 @@ def _validate_body(body, settings, chat):
     model = body.get("model") or settings["model"]
     if not model or model not in models():
         raise APIError(404, "Select an installed text encoder model in Native LLM API settings", code="model_not_found")
-    if body.get("n", 1) != 1:
+    if type(body.get("n", 1)) is not int or body.get("n", 1) != 1:
         raise APIError(400, "Only n=1 is supported", code="unsupported_parameter")
-    for field in ("tools", "functions", "response_format", "logprobs", "top_logprobs", "logit_bias", "tool_choice"):
+    if body.get("response_format") not in (None, {"type": "text"}):
+        raise APIError(400, "Only response_format type=text is supported", code="unsupported_parameter")
+    for field in ("tools", "functions", "logprobs", "top_logprobs", "logit_bias", "tool_choice"):
         if field in body and body[field] not in (None, [], {}):
             raise APIError(400, f"{field} is not supported by this native backend", code="unsupported_parameter")
-    if body.get("stream_options", {}).get("include_usage") if isinstance(body.get("stream_options"), dict) else False:
+    stream_opts = body.get("stream_options")
+    if stream_opts is not None and not isinstance(stream_opts, dict):
+        raise APIError(400, "stream_options must be an object")
+    if stream_opts and stream_opts.get("include_usage"):
         raise APIError(400, "Streaming token usage is not available", code="unsupported_parameter")
     effective = dict(settings)
     mapping = {"max_tokens": "max_tokens", "max_completion_tokens": "max_tokens",
@@ -97,10 +102,15 @@ def _validate_body(body, settings, chat):
         v = effective[key]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not low <= v <= high:
             raise APIError(400, f"Invalid {key}")
+    for k in ("top_k", "max_tokens"):
+        if int(effective[k]) != effective[k]:
+            raise APIError(400, f"{k} must be an integer")
     if effective["mtp"] not in config.MTP:
         raise APIError(400, "Invalid mtp")
     if "seed" in effective and (type(effective["seed"]) is not int or not 0 <= effective["seed"] <= 0xffffffffffffffff):
         raise APIError(400, "Seed must be a nonnegative integer")
+    if "stream" in body and not isinstance(body["stream"], bool):
+        raise APIError(400, "stream must be boolean")
     if not isinstance(effective["thinking"], bool):
         raise APIError(400, "thinking must be boolean")
     if chat:
@@ -248,8 +258,6 @@ async def inference(request, chat):
         created = int(time.time())
         response_id = ("chatcmpl-" if chat else "cmpl-") + rid
         streaming = body.get("stream", False)
-        if not isinstance(streaming, bool):
-            raise APIError(400, "stream must be boolean")
         if not streaming:
             result = await await_output(prompt_id, settings["timeout_seconds"], request)
             text, reason = stop_text(result, stops)
