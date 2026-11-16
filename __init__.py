@@ -25,6 +25,10 @@ class NativeLLMAPITextGenerate(TextGenerateV2):
                 image=None, thinking=False, use_default_template=True, video=None, audio=None,
                 mtp="auto", system_prompt="", images=None, videos=None, audios=None):
         session = lookup(request_id)
+        if not request_id or session is None or session.prompt is None:
+            raise RuntimeError("Native LLM API request expired or unavailable")
+        # Retrieve private text by opaque ID, never from history-visible workflow inputs.
+        prompt = session.prompt
         # Also capture final accepted IDs: MTP can finish without a progress update.
         original_generate = clip.generate
         original_tokenize = clip.tokenize
@@ -100,7 +104,10 @@ class NativeLLMAPIOutput:
     OUTPUT_NODE = True
 
     def capture(self, text, reasoning, request_id):
-        return {"ui": {"text": [text], "reasoning": [reasoning]}, "result": (text, reasoning)}
+        # This output node is intentionally history-safe. Native ComfyUI persists
+        # OUTPUT_NODE UI fields and workflow inputs in /history; no chat content
+        # or reasoning is allowed here.
+        return {"ui": {"status": ["completed"]}, "result": ("completed", "")}
 
 
 NODE_CLASS_MAPPINGS = {
