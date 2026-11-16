@@ -56,3 +56,9 @@ When OpenAI tools are supplied, the model is instructed to respond with a JSON t
 ### Tests
 
 GitHub Actions runs Python syntax checks, JavaScript syntax checks, settings tests, accepted-token/MTP-stream capture tests, and JSON/tool compatibility tests. GPU streaming behavior and SillyTavern end-to-end compatibility need a ComfyUI installation with a supported native model for final verification.
+
+## Native GPU compatibility and chat privacy
+
+- For a known W4A8 ConvRot CUDA shared-memory launch error (`convrot fused kernel shared memory request`), API inference retries through Comfy Kitchen’s existing two-pass rotation/INT8 quantization and chunked W4A8 GEMM backend. Other error types are not swallowed. The fallback applies only during API inference, preserves quantized weights and native ComfyUI memory management, and may be slower than a working fused kernel. **It requires a Kitchen version with `w4a8_codebook_gemm_chunked`; upgrade ComfyUI and Kitchen if your version lacks it.**
+- API user messages, system instructions and assistant completions are not written into ComfyUI queue input or history. They are held in a request-scoped Python memory session and released when the request ends. ComfyUI history receives only a request identifier and a `completed` status. The model still processes the message in RAM/VRAM; OpenAI API clients receive the answer. This is not a general-purpose disabling of ComfyUI or system-wide logging, nor does it retroactively delete earlier history entries.
+- API client output is available only during the HTTP request. If the client disconnects or generation times out, the private session is released and no chat text persists in the native ComfyUI prompt history.
