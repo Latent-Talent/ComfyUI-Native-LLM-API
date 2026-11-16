@@ -155,7 +155,7 @@ app.registerExtension({
             const rotate = element("button", actions, "Rotate API key");
             const free = element("button", actions, "Unload models");
             const status = element("div", form, "", "hint");
-            element("div", form, "Requests use ComfyUI's queue and native memory management. Streaming sends SSE heartbeats until the completed output is available.", "hint");
+            element("div", form, "Requests use ComfyUI's queue and native memory management. Accepted native tokens stream incrementally via SSE; MTP commits may arrive in batches. Function calls are buffered for JSON validation.", "hint");
             element("div", form, "Security: keep ComfyUI behind a trusted LAN or VPN. The API key does not secure ComfyUI's other endpoints.", "hint");
 
             save.onclick = async () => {
