@@ -58,12 +58,12 @@ class TestStreaming(unittest.TestCase):
         try:
             stream.install_progress_tap()
             # Execute code under upstream module names so the capture contract is tested.
-            base_scope = {"__name__": "comfy.text_encoders.llama"}
+            base_scope = {"__name__": "comfy.text_encoders.llama", "time": __import__("time")}
             exec("def generate(progress):\n"
                  "    generated_token_ids = []\n"
                  "    for value in (1, 2, 3):\n"
                  "        generated_token_ids.append(value)\n"
-                 "        progress.update(1)\n", base_scope)
+                 "        progress.update(1)\n"\n                 "        time.sleep(0.06)\n", base_scope)
             mtp_scope = {"__name__": "comfy.text_encoders.qwen35"}
             exec("def _generate_mtp(progress):\n"
                  "    ids = [1]\n"
