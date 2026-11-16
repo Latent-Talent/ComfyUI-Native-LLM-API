@@ -47,10 +47,36 @@ class APITests(unittest.TestCase):
         self.assertIn("<|im_start|>user\nHow are you?<|im_end|>", prompt)
         graph = workflow(model, prompt, options, "request")
         self.assertEqual(graph["2"]["class_type"], "NativeLLMAPITextGenerate")
-        self.assertEqual(graph["2"]["inputs"]["sampling_mode"]["top_k"], 20)
+        self.assertEqual(graph["2"]["inputs"]["sampling_mode"], "on")
+        self.assertEqual(graph["2"]["inputs"]["sampling_mode.top_k"], 20)
+        self.assertNotIsInstance(graph["2"]["inputs"]["sampling_mode"], dict)
+        self.assertIn("sampling_mode.seed", graph["2"]["inputs"])
         self.assertEqual(graph["2"]["inputs"]["mtp"], "auto")
         self.assertEqual(graph["3"]["inputs"]["reasoning"], ["2", 1])
         self.assertEqual(stops, ["<END>"])
+
+
+    def test_dynamic_sampling_combo_comfy_v3_contract(self):
+        # V3's get_finalized_class_inputs() uses the root value to select
+        # an option, then build_nested_inputs() rebuilds a nested dict.
+        for sampling, temperature, expected in ((True, 0.7, "on"),
+                                                (False, 0.7, "off"),
+                                                (True, 0, "off")):
+            with self.subTest(sampling=sampling, temperature=temperature):
+                opts = {**self.settings, "sampling": sampling, "temperature": temperature}
+                fields = workflow(opts["model"], "Hello", opts, "request")["2"]["inputs"]
+                self.assertEqual(fields["sampling_mode"], expected)
+                if expected == "on":
+                    self.assertIn("sampling_mode.seed", fields)
+                    self.assertIn("sampling_mode.temperature", fields)
+                    normalized = {"sampling_mode": fields["sampling_mode"]}
+                    normalized.update({key.split(".", 1)[1]: value
+                                       for key, value in fields.items()
+                                       if key.startswith("sampling_mode.")})
+                    self.assertEqual(normalized["sampling_mode"], "on")
+                    self.assertEqual(normalized["temperature"], temperature)
+                else:
+                    self.assertFalse(any(key.startswith("sampling_mode.") for key in fields))
 
     def test_tools_preserve_qwen_native_template(self):
         body = {
