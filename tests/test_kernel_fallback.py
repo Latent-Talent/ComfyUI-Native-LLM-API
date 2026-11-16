@@ -4,6 +4,7 @@ import sys
 import threading
 import types
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +71,63 @@ class KernelFallbackTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "illegal memory access"):
             wrapped(*self.args)
         self.assertEqual(len(kernel._BAD_SHAPES), 0)
+
+    def test_two_pass_kernel_fallback_uses_existing_quantized_ops(self):
+        calls = []
+        class Tensor:
+            def __init__(self, shape, dtype="bf16"):
+                self.shape, self.dtype, self.device = tuple(shape), dtype, "cuda:0"
+            def contiguous(self):
+                return self
+            def get_device(self):
+                return 0
+            def numel(self):
+                count = 1
+                for n in self.shape:
+                    count *= n
+                return count
+            def copy_(self, other):
+                calls.append(("copy", other.shape))
+                return self
+            def view(self, dtype):
+                return self
+            def reshape(self, *dims):
+                return Tensor(dims, self.dtype)
+
+        fake_torch = types.SimpleNamespace(
+            int8="int8", uint8="uint8",
+            empty=lambda *shape, **kw: Tensor(shape, kw.get("dtype", "bf16")),
+            cuda=types.SimpleNamespace(current_stream=lambda device: types.SimpleNamespace(cuda_stream=7)),
+        )
+
+        class CUDAKernel:
+            @staticmethod
+            def w4a8_codebook_gemm_chunked(*args):
+                calls.append(("gemm", len(args)))
+                return True
+
+        cuda = types.SimpleNamespace(
+            torch=fake_torch, _C=CUDAKernel(), DTYPE_TO_CODE={"bf16": 3},
+            _build_hadamard=lambda *a, **k: "hadamard",
+            _rotate_activation=lambda x, h, groupsize: x,
+            quantize_int8_rowwise=lambda x: (Tensor(x.shape, "int8"), Tensor((2, 1), "float32")),
+            _w4a8_weight_chunk_cols=lambda m, n, device: 512,
+            _wrap_for_dlpack=lambda x: x,
+        )
+        x = Tensor((2, 512))
+        args = (
+            x, Tensor((128, 256), "int8"), Tensor((128, 32), "float8"),
+            Tensor((128,)), None, None, Tensor((2, 512), "int8"),
+            Tensor((2, 1), "float32"), Tensor((2, 128)),
+            256, 16, False, None,
+        )
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            success, xq, scales = kernel._staged_w4a8(cuda, args, {})
+        self.assertTrue(success)
+        self.assertEqual(xq.shape, (2, 512))
+        self.assertEqual(scales.shape, (2, 1))
+        self.assertEqual([item[0] for item in calls], ["copy", "copy", "gemm"])
+        self.assertEqual(calls[-1], ("gemm", 14))
 
     def test_unaffected_kernel_keeps_native_path(self):
         streaming._THREAD.capture = ("session", "decode")
