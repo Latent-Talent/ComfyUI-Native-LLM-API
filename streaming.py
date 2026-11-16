@@ -8,6 +8,7 @@ future upstream version changes either generator's progress contract.
 import logging
 import sys
 import threading
+import time
 
 LOG = logging.getLogger("native_llm_api.streaming")
 REGISTRY = {}
@@ -51,14 +52,21 @@ class CaptureSession:
         self.cancelled = False
         self.error = None
         self.generation_completed = False
+        self.last_decoded_at = 0.0
 
-    def feed(self, token_ids, decoder, prompt_tokens=None):
+    def feed(self, token_ids, decoder, prompt_tokens=None, force=False):
         if self.cancelled:
             raise GenerationCancelled()
         if not token_ids:
             return
         if len(token_ids) <= self.completion_tokens:
             return
+        now = time.monotonic()
+        # Keep tokenizer decoding off the GPU hot path where possible; cap it
+        # near 20 Hz while still observing every MTP commit and stop sequence.
+        if not force and self.last_decoded_at and now - self.last_decoded_at < 0.05 and len(token_ids) - self.completion_tokens < 3:
+            return
+        self.last_decoded_at = now
         # Decode actual accepted model tokens, including MTP's multi-token commits.
         raw = decoder(token_ids)
         content, reasoning = split_reasoning(raw, self.thinking)
