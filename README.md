@@ -40,12 +40,12 @@ This project does not use llama.cpp, vLLM, or transformers generation engines.
 
 OpenAI-compatible request example (replace KEY and model name):
 
-\`\`\`bash
+```bash
 curl -N http://127.0.0.1:8188/v1/chat/completions \
   -H "Authorization: Bearer KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"model.safetensors","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"Hi"}],"max_tokens":128,"temperature":0.7,"min_p":0.05,"top_k":64,"mtp":"auto"}'
-\`\`\`
+```
 
 Supported options include max_tokens, max_completion_tokens, temperature, top_p, top_k, min_p, repetition_penalty (or rep_pen), presence_penalty, seed, stop, thinking, mtp and stream. Unsupported sampling features such as nonzero frequency_penalty are rejected rather than silently ignored.
 
