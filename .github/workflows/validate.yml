@@ -13,5 +13,10 @@ jobs:
         run: |
           cp web/native_llm_api.js /tmp/native_llm_api.mjs
           node --check /tmp/native_llm_api.mjs
+          cp web/native_llm_chat.js /tmp/native_llm_chat.mjs
+          node --check /tmp/native_llm_chat.mjs
+          node --check web/native_llm_sse.mjs
+      - name: Test chat streaming and conversation behavior
+        run: node --test tests/test_chat_sse.mjs
       - name: Validate config persistence and inputs
         run: python -m unittest discover -s tests -v
