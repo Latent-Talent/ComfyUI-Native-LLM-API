@@ -8,7 +8,7 @@ An OpenAI-compatible API gateway implemented as a ComfyUI custom node. Inference
 
 Clone into `ComfyUI/custom_nodes/ComfyUI-Native-LLM-API` and restart ComfyUI. Requires a version of ComfyUI with the native `TextGenerateV2` node (v0.45.0 recommended).
 
-Open **Native LLM API** from the left sidebar. Choose a text-encoder checkpoint from `ComfyUI/models/text_encoders`, adjust sampling and MTP options, and save. The API key is generated automatically and shown in the settings panel.
+Open **Native LLM API** from the left sidebar. This single sidebar item contains **Settings** and **Chat** tabs. Settings selects a text-encoder checkpoint from `ComfyUI/models/text_encoders`, sampling, and MTP options, and displays the generated API key. Chat is a lightweight diagnostic view that uses the same `/v1/chat/completions` API (streaming output, conversation history, Stop and Clear). It does not register a separate ComfyUI sidebar icon. Chat messages remain in browser memory only and are not written to ComfyUI workflow history.
 
 SillyTavern: **Chat Completion** > **Custom (OpenAI-compatible)**, URL `http://127.0.0.1:8188/v1` (or `http://COMFY-LAN-IP:8188/v1`), API key from sidebar, model from `/v1/models`.
 
