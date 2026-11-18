@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { registerChatSidebar } from "./native_llm_chat.js";
 
 const FIELD_GROUPS = [
   ["Sampling", [
@@ -196,5 +197,6 @@ app.registerExtension({
         load();
       },
     });
+    registerChatSidebar(appInstance, api);
   },
 });
