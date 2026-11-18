@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createSSEParser, consumeChatSSE, buildChatMessages } from "../web/native_llm_sse.mjs";
 
 const encoder = new TextEncoder();
@@ -102,4 +103,17 @@ test("Conversation context includes complete turns only and is bounded", () => {
     { role: "assistant", content: "hello" },
     { role: "user", content: "try again" },
   ]);
+});
+
+test("Diagnostic chat is an internal tab, not a separate ComfyUI sidebar icon", () => {
+  const sidebar = readFileSync(new URL("../web/native_llm_api.js", import.meta.url), "utf8");
+  const chat = readFileSync(new URL("../web/native_llm_chat.js", import.meta.url), "utf8");
+  const sidebarRegistrations = sidebar.match(/registerSidebarTab\s*\(/g) || [];
+  assert.equal(sidebarRegistrations.length, 1);
+  assert.match(sidebar, /id:\s*"latent-talent-native-llm-api"/);
+  assert.match(sidebar, /element\("button", tabs, "Settings",/);
+  assert.match(sidebar, /element\("button", tabs, "Chat",/);
+  assert.match(sidebar, /mountChat\(chatPanel, api\)/);
+  assert.doesNotMatch(sidebar, /registerChatSidebar/);
+  assert.doesNotMatch(chat, /registerSidebarTab\s*\(/);
 });
