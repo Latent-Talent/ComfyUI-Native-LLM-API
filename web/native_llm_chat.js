@@ -343,13 +343,6 @@ function mountChat(host, api) {
   });
 }
 
-export function registerChatSidebar(appInstance, api) {
-  appInstance.extensionManager.registerSidebarTab({
-    id: "latent-talent-native-llm-chat",
-    icon: "pi pi-comments",
-    title: "Native LLM Chat",
-    tooltip: "Chat with your loaded native ComfyUI LLM",
-    type: "custom",
-    render: (host) => mountChat(host, api),
-  });
-}
+// Mounted by the existing Native LLM API sidebar's internal Chat tab.
+// Do not create an additional ComfyUI sidebar item.
+export { mountChat };
