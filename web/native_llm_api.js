@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { registerChatSidebar } from "./native_llm_chat.js";
+import { mountChat } from "./native_llm_chat.js";
 
 const FIELD_GROUPS = [
   ["Sampling", [
@@ -23,28 +23,38 @@ const FIELD_GROUPS = [
   ]],
 ];
 const MTP_OPTIONS = ["auto", "off", "2", "3", "4", "5", "tree2s1", "tree2s2", "tree3s1", "tree4s1m8"];
+let activePanel = "settings";
+
 const STYLES = `
-.native-api-root { height:100%; overflow:auto; box-sizing:border-box; padding:14px; font: 13px/1.45 system-ui, sans-serif; color:var(--fg-color, #ddd); }
-.native-api-root h2 { font-size:16px; font-weight:650; margin:0 0 3px; }
-.native-api-root h3 { font-size:13px; font-weight:650; margin:16px 0 8px; border-bottom:1px solid var(--border-color, #555); padding-bottom:6px; }
-.native-api-root p { margin:5px 0 12px; opacity:.8; }
-.native-api-root label { display:block; font-size:12px; margin:10px 0 4px; opacity:.92; }
-.native-api-root input:not([type=checkbox]),.native-api-root select { box-sizing:border-box; width:100%; min-width:0; padding:7px; border:1px solid var(--border-color,#555); border-radius:5px; background:var(--comfy-input-bg,#272727); color:inherit; font:inherit; }
-.native-api-root input[type=checkbox] { margin-right:8px; }
-.native-api-root .check { display:flex; align-items:center; }
-.native-api-root .actions { display:flex; flex-wrap:wrap; gap:6px; margin:12px 0; }
-.native-api-root button { border:1px solid var(--border-color,#666); background:var(--comfy-input-bg,#303030); color:inherit; padding:7px 10px; border-radius:5px; cursor:pointer; }
-.native-api-root button.primary { background:#3b6794; color:white; border-color:#3b6794; }
-.native-api-root button:disabled { opacity:.5; cursor:wait; }
-.native-api-root .hint { font-size:11px; opacity:.7; word-break:break-word; margin-top:5px; }
-.native-api-root .notice { min-height:20px; font-size:12px; padding-top:5px; }
-.native-api-root .bad { color:#ff8b8b; }
-.native-api-root .good { color:#8bdfa4; }
-.native-api-root .secret { display:flex; gap:6px; }
-.native-api-root .secret input { flex:1; min-width:0; }
-.native-api-root details { margin-top:12px; }
-.native-api-root summary { cursor:pointer; }
-.native-api-root code { overflow-wrap:anywhere; }
+.native-api-root { height:100%; min-height:0; overflow:hidden; display:flex; flex-direction:column; box-sizing:border-box; padding:0; font:13px/1.45 system-ui, sans-serif; color:var(--fg-color, #ddd); }
+.native-api-root .native-internal-tabs { display:flex; gap:5px; padding:8px 12px 0; flex-shrink:0; border-bottom:1px solid var(--border-color, #555); }
+.native-api-root .native-internal-tab { flex:1; border:0; border-bottom:2px solid transparent; background:transparent; color:inherit; font:inherit; font-weight:600; padding:8px 12px; cursor:pointer; opacity:.7; }
+.native-api-root .native-internal-tab[aria-selected="true"] { opacity:1; border-bottom-color:var(--primary-color, #5595d0); }
+.native-api-root .native-internal-tab:focus-visible { outline:2px solid var(--primary-color, #5595d0); outline-offset:-2px; }
+.native-api-root .native-internal-panel { flex:1; min-height:0; min-width:0; }
+.native-api-root .native-internal-panel[hidden] { display:none; }
+.native-api-root .native-settings-panel { overflow-y:auto; padding:14px; }
+.native-api-root .native-chat-panel { overflow:hidden; }
+.native-api-root .native-settings-panel h2 { font-size:16px; font-weight:650; margin:0 0 3px; }
+.native-api-root .native-settings-panel h3 { font-size:13px; font-weight:650; margin:16px 0 8px; border-bottom:1px solid var(--border-color, #555); padding-bottom:6px; }
+.native-api-root .native-settings-panel p { margin:5px 0 12px; opacity:.8; }
+.native-api-root .native-settings-panel label { display:block; font-size:12px; margin:10px 0 4px; opacity:.92; }
+.native-api-root .native-settings-panel input:not([type=checkbox]),.native-api-root .native-settings-panel select { box-sizing:border-box; width:100%; min-width:0; padding:7px; border:1px solid var(--border-color,#555); border-radius:5px; background:var(--comfy-input-bg,#272727); color:inherit; font:inherit; }
+.native-api-root .native-settings-panel input[type=checkbox] { margin-right:8px; }
+.native-api-root .native-settings-panel .check { display:flex; align-items:center; }
+.native-api-root .native-settings-panel .actions { display:flex; flex-wrap:wrap; gap:6px; margin:12px 0; }
+.native-api-root .native-settings-panel button { border:1px solid var(--border-color,#666); background:var(--comfy-input-bg,#303030); color:inherit; padding:7px 10px; border-radius:5px; cursor:pointer; }
+.native-api-root .native-settings-panel button.primary { background:#3b6794; color:white; border-color:#3b6794; }
+.native-api-root .native-settings-panel button:disabled { opacity:.5; cursor:wait; }
+.native-api-root .native-settings-panel .hint { font-size:11px; opacity:.7; word-break:break-word; margin-top:5px; }
+.native-api-root .native-settings-panel .notice { min-height:20px; font-size:12px; padding-top:5px; }
+.native-api-root .native-settings-panel .bad { color:#ff8b8b; }
+.native-api-root .native-settings-panel .good { color:#8bdfa4; }
+.native-api-root .native-settings-panel .secret { display:flex; gap:6px; }
+.native-api-root .native-settings-panel .secret input { flex:1; min-width:0; }
+.native-api-root .native-settings-panel details { margin-top:12px; }
+.native-api-root .native-settings-panel summary { cursor:pointer; }
+.native-api-root .native-settings-panel code { overflow-wrap:anywhere; }
 `;
 
 function element(tag, parent, text, className) {
@@ -98,10 +108,49 @@ app.registerExtension({
         const root = element("div", host, undefined, "native-api-root");
         const style = element("style", root);
         style.textContent = STYLES;
-        element("h2", root, "Native LLM API");
-        element("p", root, "Native ComfyUI inference · OpenAI-compatible endpoints");
-        const notice = element("div", root, "Loading settings…", "notice");
-        const form = element("div", root);
+        const tabs = element("div", root, undefined, "native-internal-tabs");
+        tabs.setAttribute("role", "tablist");
+        tabs.setAttribute("aria-label", "Native LLM API");
+        const settingsTab = element("button", tabs, "Settings", "native-internal-tab");
+        const chatTab = element("button", tabs, "Chat", "native-internal-tab");
+        settingsTab.type = chatTab.type = "button";
+        settingsTab.id = "native-llm-api-settings-tab";
+        chatTab.id = "native-llm-api-chat-tab";
+        const settingsPanel = element("div", root, undefined, "native-internal-panel native-settings-panel");
+        const chatPanel = element("div", root, undefined, "native-internal-panel native-chat-panel");
+        settingsPanel.id = "native-llm-api-settings-panel";
+        chatPanel.id = "native-llm-api-chat-panel";
+        settingsTab.setAttribute("role", "tab");
+        chatTab.setAttribute("role", "tab");
+        settingsTab.setAttribute("aria-controls", settingsPanel.id);
+        chatTab.setAttribute("aria-controls", chatPanel.id);
+        settingsPanel.setAttribute("role", "tabpanel");
+        chatPanel.setAttribute("role", "tabpanel");
+        settingsPanel.setAttribute("aria-labelledby", settingsTab.id);
+        chatPanel.setAttribute("aria-labelledby", chatTab.id);
+
+        let chatMounted = false;
+        function showPanel(panel) {
+          activePanel = panel;
+          const isChat = panel === "chat";
+          settingsPanel.hidden = isChat;
+          chatPanel.hidden = !isChat;
+          settingsTab.setAttribute("aria-selected", String(!isChat));
+          chatTab.setAttribute("aria-selected", String(isChat));
+          settingsTab.tabIndex = isChat ? -1 : 0;
+          chatTab.tabIndex = isChat ? 0 : -1;
+          if (isChat && !chatMounted) {
+            chatMounted = true;
+            mountChat(chatPanel, api);
+          }
+        }
+        settingsTab.onclick = () => showPanel("settings");
+        chatTab.onclick = () => showPanel("chat");
+        showPanel(activePanel);
+        element("h2", settingsPanel, "Native LLM API");
+        element("p", settingsPanel, "Native ComfyUI inference · OpenAI-compatible endpoints");
+        const notice = element("div", settingsPanel, "Loading settings…", "notice");
+        const form = element("div", settingsPanel);
         const setNotice = (message, bad = false) => {
           notice.textContent = message;
           notice.className = "notice " + (bad ? "bad" : "good");
@@ -197,6 +246,5 @@ app.registerExtension({
         load();
       },
     });
-    registerChatSidebar(appInstance, api);
   },
 });
