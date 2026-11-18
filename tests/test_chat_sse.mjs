@@ -117,3 +117,17 @@ test("Diagnostic chat is an internal tab, not a separate ComfyUI sidebar icon", 
   assert.doesNotMatch(sidebar, /registerChatSidebar/);
   assert.doesNotMatch(chat, /registerSidebarTab\s*\(/);
 });
+
+
+test("Diagnostic chat stays inside panel with dedicated scroll viewport", () => {
+  const sidebar = readFileSync(new URL("../web/native_llm_api.js", import.meta.url), "utf8");
+  const chat = readFileSync(new URL("../web/native_llm_chat.js", import.meta.url), "utf8");
+  assert.match(sidebar, /host\.style\.position\s*=\s*"relative"/);
+  assert.match(sidebar, /host\.style\.overflow\s*=\s*"hidden"/);
+  assert.match(sidebar, /\.native-api-root \{ position:absolute; inset:0;/);
+  assert.match(sidebar, /\.native-chat-panel \{ display:flex; flex-direction:column; overflow:hidden; min-height:0;/);
+  assert.match(chat, /\.chat-scroll \{ flex:1 1 0; height:0; min-height:0; overflow-x:hidden; overflow-y:auto;/);
+  assert.match(chat, /\.chat-message \{ flex:0 0 auto;/);
+  assert.match(chat, /\.chat-composer \{[^"]*flex:0 0 auto;[^"]*overflow:hidden;/);
+  assert.match(chat, /\.chat-composer textarea \{[^"]*max-height:110px;/);
+});
