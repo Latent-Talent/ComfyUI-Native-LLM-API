@@ -26,7 +26,7 @@ const MTP_OPTIONS = ["auto", "off", "2", "3", "4", "5", "tree2s1", "tree2s2", "t
 let activePanel = "settings";
 
 const STYLES = `
-.native-api-root { height:100%; min-height:0; overflow:hidden; display:flex; flex-direction:column; box-sizing:border-box; padding:0; font:13px/1.45 system-ui, sans-serif; color:var(--fg-color, #ddd); }
+.native-api-root { position:absolute; inset:0; width:100%; height:auto; min-height:0; min-width:0; overflow:hidden; display:flex; flex-direction:column; box-sizing:border-box; padding:0; font:13px/1.45 system-ui, sans-serif; color:var(--fg-color, #ddd); }
 .native-api-root .native-internal-tabs { display:flex; gap:5px; padding:8px 12px 0; flex-shrink:0; border-bottom:1px solid var(--border-color, #555); }
 .native-api-root .native-internal-tab { flex:1; border:0; border-bottom:2px solid transparent; background:transparent; color:inherit; font:inherit; font-weight:600; padding:8px 12px; cursor:pointer; opacity:.7; }
 .native-api-root .native-internal-tab[aria-selected="true"] { opacity:1; border-bottom-color:var(--primary-color, #5595d0); }
@@ -34,7 +34,7 @@ const STYLES = `
 .native-api-root .native-internal-panel { flex:1; min-height:0; min-width:0; }
 .native-api-root .native-internal-panel[hidden] { display:none; }
 .native-api-root .native-settings-panel { overflow-y:auto; padding:14px; }
-.native-api-root .native-chat-panel { overflow:hidden; }
+.native-api-root .native-chat-panel { display:flex; flex-direction:column; overflow:hidden; min-height:0; }
 .native-api-root .native-settings-panel h2 { font-size:16px; font-weight:650; margin:0 0 3px; }
 .native-api-root .native-settings-panel h3 { font-size:13px; font-weight:650; margin:16px 0 8px; border-bottom:1px solid var(--border-color, #555); padding-bottom:6px; }
 .native-api-root .native-settings-panel p { margin:5px 0 12px; opacity:.8; }
@@ -105,6 +105,13 @@ app.registerExtension({
       type: "custom",
       render: (host) => {
         host.textContent = "";
+        // Keep this custom sidebar inside the height assigned by ComfyUI.
+        // The absolute root prevents chat content from growing the sidebar host.
+        host.style.position = "relative";
+        host.style.height = "100%";
+        host.style.minHeight = "0";
+        host.style.minWidth = "0";
+        host.style.overflow = "hidden";
         const root = element("div", host, undefined, "native-api-root");
         const style = element("style", root);
         style.textContent = STYLES;
