@@ -101,3 +101,38 @@ redirects; local/private URLs and animated images are refused.
 **SillyTavern setting:** Enable inline-image sending for the Custom
 OpenAI-compatible Chat Completion model. The video generator's own checkbox
 still independently controls whether quiet LLM generation includes the image.
+
+### Verify first-frame images actually reach the native model
+
+Do not infer image support from a Qwen/Gemma model filename, or from an LLM
+response. Some quantized checkpoints omit the vision encoder. The API now
+inspects safetensors tensor names for a vision tower and fails with HTTP 422
+when the selected checkpoint has no detected visual-encoder weights.
+At runtime it compares the number of incoming `image_url` parts with the
+number of **actual native image embedding objects** produced by the tokenizer.
+A mismatch fails explicitly rather than returning a successful text-only answer.
+
+The existing **Native LLM API → Settings → Check image status** button
+displays only sanitized counts and an image-processing stage. The same data
+is available from `GET /native_llm_api/status` under `last_vision_request`.
+Neither endpoint includes prompts, image pixels, URLs or response text.
+
+| Stage | Meaning |
+|---|---|
+| `text_only` | No image parts were attached to this API request |
+| `image_received` | `image_url` part found in the incoming OpenAI messages |
+| `images_decoded` | Image data decoded/validated successfully |
+| `checkpoint_missing_vision` | Checkpoint has no detected visual-encoder tensors; rejected |
+| `tokenizer_missing_images` | Image supplied but native tokenizer did not bind its image token; rejected |
+| `vision_embeddings_verified` | Image tokens bound successfully; generation underway |
+| `completed_with_vision` | Generation finished with matching image embeddings |
+
+If a SillyTavern video prompt shows `text_only`, verify its
+**Include first frame with LLM request** checkbox and SillyTavern's
+**Send inline images** setting under the Custom OpenAI-compatible provider.
+The `prompt: undefined` field in a chat-completion debug object is normal:
+chat-completions use `messages` instead of `prompt`.
+
+Note: a text-only prompt-token count is not proof that vision was processed.
+For prompts containing image embedding objects, native token usage accounting
+may be unavailable because image embeddings are not ordinary text token IDs.
