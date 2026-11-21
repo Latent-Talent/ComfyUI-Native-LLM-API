@@ -22,12 +22,14 @@ _LAST_VISION = {
 _LAST_VISION_REQUEST = None
 
 
-def set_vision_status(request_id, **fields):
+def set_vision_status(request_id, *, start=False, **fields):
     global _LAST_VISION_REQUEST
     allowed = {"image_parts", "decoded_images", "embedded_images",
                "checkpoint_vision", "stage"}
     with _REGISTRY_LOCK:
         if _LAST_VISION_REQUEST != request_id:
+            if not start:
+                return
             _LAST_VISION_REQUEST = request_id
             _LAST_VISION.clear()
             _LAST_VISION.update({
