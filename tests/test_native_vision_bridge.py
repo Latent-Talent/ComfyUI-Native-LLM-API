@@ -1,0 +1,73 @@
+"""Prove the native worker receives private first-frame image tensors, not graph payloads."""
+import ast
+import types
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class NativeVisionBridgeTests(unittest.TestCase):
+    def test_session_frame_reaches_native_generate_text(self):
+        parsed = ast.parse((ROOT / "__init__.py").read_text(encoding="utf-8"))
+        node = next(node for node in parsed.body
+                    if isinstance(node, ast.ClassDef) and node.name == "NativeLLMAPITextGenerate")
+        calls = []
+        session = types.SimpleNamespace(
+            prompt="The supplied <Picture 1> is the exact FIRST FRAME.",
+            images=[b"opaque compressed frame bytes"],
+            finish=lambda *a, **kw: calls.append(("finish", a)),
+            fail=lambda *a, **kw: calls.append(("fail", a)),
+        )
+
+        class StubTextGenerate:
+            @classmethod
+            def execute(cls, **kwargs):
+                calls.append(("execute", kwargs))
+                return ("completed prompt", "")
+
+        class NoopCapture:
+            def __init__(self, *_args):
+                pass
+            def __enter__(self):
+                return session
+            def __exit__(self, *_args):
+                return False
+
+        def convert(private_bytes):
+            self.assertEqual(private_bytes, [b"opaque compressed frame bytes"])
+            return {"image1": "PRIVATE_IMAGE_TENSOR"}
+
+        scope = {
+            "TextGenerateV2": StubTextGenerate,
+            "lookup": lambda rid: session if rid == "id" else None,
+            "ic": types.SimpleNamespace(image_tensors=convert),
+            "native_capture": NoopCapture,
+            "kernel_fallback": types.SimpleNamespace(install=lambda: None),
+            "io": types.SimpleNamespace(NodeOutput=lambda *args: args),
+            "StopAtSequence": type("StopAtSequence", (Exception,), {}),
+            "GenerationCancelled": type("GenerationCancelled", (Exception,), {}),
+        }
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])),
+                     str(ROOT / "__init__.py"), "exec"), scope)
+        clip = types.SimpleNamespace(
+            generate=lambda *args, **kwargs: [],
+            tokenize=lambda *args, **kwargs: {},
+            decode=lambda ids: "decoded",
+        )
+        orig_generate, orig_tokenize = clip.generate, clip.tokenize
+        outcome = scope["NativeLLMAPITextGenerate"].execute(
+            clip=clip, prompt="", max_length=32, sampling_mode={"sampling_mode": "off"},
+            request_id="id",
+        )
+        self.assertEqual(outcome, ("completed prompt", ""))
+        self.assertEqual(calls[0][0], "execute")
+        self.assertEqual(calls[0][1]["prompt"], session.prompt)
+        self.assertEqual(calls[0][1]["images"], {"image1": "PRIVATE_IMAGE_TENSOR"})
+        self.assertEqual(calls[-1][0], "finish")
+        self.assertIs(clip.generate, orig_generate)
+        self.assertIs(clip.tokenize, orig_tokenize)
+
+
+if __name__ == "__main__":
+    unittest.main()
