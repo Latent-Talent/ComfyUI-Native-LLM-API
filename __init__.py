@@ -60,6 +60,10 @@ class NativeLLMAPITextGenerate(TextGenerateV2):
                     if bound != expected:
                         set_vision_status(request_id, embedded_images=bound,
                                           stage="tokenizer_missing_images")
+                        logging.getLogger("native_llm_api").warning(
+                            "[Native LLM API] native image embeddings missing: expected=%d bound=%d",
+                            expected, bound,
+                        )
                         raise RuntimeError(
                             "Native vision tokenization failed: received "
                             f"{expected} image(s) but tokenizer bound {bound}. "
@@ -67,6 +71,10 @@ class NativeLLMAPITextGenerate(TextGenerateV2):
                         )
                     set_vision_status(request_id, embedded_images=bound,
                                       stage="vision_embeddings_verified")
+                    logging.getLogger("native_llm_api").info(
+                        "[Native LLM API] native image embeddings: expected=%d bound=%d",
+                        expected, bound,
+                    )
             return tokens
 
         if session is not None:
