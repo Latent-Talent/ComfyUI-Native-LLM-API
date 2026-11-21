@@ -8,7 +8,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check Python source syntax
-        run: python -m compileall -q __init__.py api.py native_llm_config.py image_context.py
+        run: python -m compileall -q __init__.py api.py native_llm_config.py image_context.py http_json.py vision_support.py
       - name: Check JavaScript syntax
         run: |
           cp web/native_llm_api.js /tmp/native_llm_api.mjs
