@@ -480,6 +480,8 @@ async def inference(request, chat):
         raise APIError(400, "Invalid JSON request body") from exc
     model, prompt, effective, stops, metadata = _validate_body(body, settings, chat)
     image_urls = metadata.pop("image_urls", [])
+    # Metadata only: never log message contents, image URLs, base64 or pixel data.
+    LOG.info("[Native LLM API] request media: image_parts=%d", len(image_urls))
     rid = str(uuid.uuid4())
     streaming.set_vision_status(rid, start=True, image_parts=len(image_urls),
                                 stage="image_received" if image_urls else "text_only")
@@ -492,6 +494,10 @@ async def inference(request, chat):
         streaming.set_vision_status(rid, decoded_images=len(images), stage="images_decoded")
         weight_state, reason = vs.inspect_checkpoint(model, folder_paths.get_full_path)
         streaming.set_vision_status(rid, checkpoint_vision=weight_state)
+        LOG.info(
+            "[Native LLM API] image handling: decoded=%d vision_weights=%s",
+            len(images), weight_state,
+        )
         if weight_state == "missing":
             streaming.set_vision_status(rid, stage="checkpoint_missing_vision")
             raise APIError(422,
