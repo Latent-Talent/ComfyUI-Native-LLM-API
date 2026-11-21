@@ -41,6 +41,7 @@ class CaptureSession:
         self.request_id = request_id
         # The sensitive request lives only in process memory; never in ComfyUI's prompt graph/history.
         self.prompt = None
+        self.images = []  # Compressed private still frames; never serialized in ComfyUI workflows.
         self.thinking = thinking
         self.stops = tuple(stops)
         self.lock = threading.Lock()
