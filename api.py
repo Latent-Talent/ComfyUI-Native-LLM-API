@@ -190,8 +190,10 @@ def render_chat(messages, model, thinking=False, extra_system="", image_urls=Non
                     parts.append(item["text"])
                     continue
                 if item.get("type") in ("image_url", "input_image"):
-                    if role not in ("user", "assistant"):
-                        raise APIError(400, "Image context must be in user or assistant messages")
+                    # SillyTavern quietImage is attached to a system-role quiet prompt.
+                    # Preserve its role and text; native Qwen handles the image pad in that turn.
+                    if role not in ("system", "developer", "user", "assistant"):
+                        raise APIError(400, "Image context is only supported in system, user or assistant turns")
                     if image_urls is None:
                         raise APIError(400, "Image context is unavailable in this request")
                     if len(image_urls) >= ic.MAX_IMAGES:
