@@ -136,3 +136,23 @@ chat-completions use `messages` instead of `prompt`.
 Note: a text-only prompt-token count is not proof that vision was processed.
 For prompts containing image embedding objects, native token usage accounting
 may be unavailable because image embeddings are not ordinary text token IDs.
+
+### Verify incoming media in the ComfyUI console
+
+The API emits **counts only**, without logging user prompts, image URLs, base64
+payloads, decoded pixels, or assistant responses:
+
+```text
+[Native LLM API] request media: image_parts=1
+[Native LLM API] image handling: decoded=1 vision_weights=present
+[Native LLM API] native image embeddings: expected=1 bound=1
+```
+
+If the first line shows `image_parts=0`, the request contains no inline
+image regardless of SillyTavern's generation settings log. Open the browser's
+developer tools, inspect **Network → /api/backends/chat-completions/generate →
+Request Payload → messages**, and check for an `image_url` content part.
+SillyTavern's top-level `prompt: undefined` debug value does not indicate
+whether `messages` contains an image.
+
+Avoid copying complete base64 data URLs or private chat text into bug reports.
