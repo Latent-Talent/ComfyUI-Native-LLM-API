@@ -5,7 +5,7 @@ WEB_DIRECTORY = "./web"
 
 from comfy_api.latest import io
 from comfy_extras.nodes_textgen import TextGenerateV2
-from .streaming import native_capture, lookup, StopAtSequence, GenerationCancelled
+from .streaming import native_capture, lookup, StopAtSequence, GenerationCancelled, count_bound_images, set_vision_status
 from . import kernel_fallback
 from . import image_context as ic
 
@@ -51,9 +51,23 @@ class NativeLLMAPITextGenerate(TextGenerateV2):
             if session is not None:
                 from .streaming import _prompt_token_count
                 count = _prompt_token_count(tokens)
-                if count is not None:
-                    with session.lock:
+                expected = len(session.images)
+                bound = count_bound_images(tokens) if expected else 0
+                with session.lock:
+                    session.images_bound = bound
+                    if count is not None:
                         session.prompt_tokens = count
+                if expected:
+                    if bound != expected:
+                        set_vision_status(request_id, embedded_images=bound,
+                                          stage="tokenizer_missing_images")
+                        raise RuntimeError(
+                            "Native vision tokenization failed: received "
+                            f"{expected} image(s) but tokenizer bound {bound}. "
+                            "The selected model may lack a compatible vision tokenizer."
+                        )
+                    set_vision_status(request_id, embedded_images=bound,
+                                      stage="vision_embeddings_verified")
             return tokens
 
         if session is not None:
@@ -71,6 +85,8 @@ class NativeLLMAPITextGenerate(TextGenerateV2):
                 )
                 if session is not None:
                     session.finish(result[0], result[1], max_tokens=max_length)
+                    if session.images:
+                        set_vision_status(request_id, stage="completed_with_vision")
                 return result
             except StopAtSequence:
                 # Native generate's finally block has run, including cache cleanup.
@@ -87,6 +103,10 @@ class NativeLLMAPITextGenerate(TextGenerateV2):
             except Exception as error:
                 if session is not None:
                     session.fail(str(error))
+                    if session.images:
+                        # Preserve the more specific missing-embedding stage.
+                        if session.images_bound == len(session.images):
+                            set_vision_status(request_id, stage="generation_failed")
                 raise
         finally:
             if session is not None:
