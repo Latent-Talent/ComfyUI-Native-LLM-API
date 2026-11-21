@@ -312,8 +312,9 @@ async def cancel(prompt_id):
 async def await_output(prompt_id, timeout, request, request_id=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        snap = streaming.lookup(request_id).snapshot() if request_id else None
-        if snap and snap.get("error", "").startswith("Native vision tokenization failed"):
+        active_session = streaming.lookup(request_id) if request_id else None
+        snap = active_session.snapshot() if active_session else None
+        if snap and str(snap.get("error") or "").startswith("Native vision tokenization failed"):
             raise APIError(422, snap["error"], code="model_vision_unavailable")
         output = get_output(prompt_id)
         if output is not None:
