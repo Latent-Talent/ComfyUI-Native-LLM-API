@@ -152,6 +152,8 @@ def _inspect_image(data, mime):
                 raise ImageContextError("Animated images are unsupported; supply a still first frame")
             image.verify()
             return width * height
+    except ImageContextError:
+        raise
     except (OSError, UnidentifiedImageError, ValueError, SyntaxError) as exc:
         raise ImageContextError("Invalid or corrupted image data") from exc
 
