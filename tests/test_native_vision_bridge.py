@@ -82,6 +82,21 @@ class NativeVisionBridgeTests(unittest.TestCase):
         self.assertIs(clip.generate, orig_generate)
         self.assertIs(clip.tokenize, orig_tokenize)
 
+        # A tokenizer that keeps the placeholder as text must never return an
+        # apparently successful answer while silently ignoring the image.
+        session.images_bound = 0
+        text_only_clip = types.SimpleNamespace(
+            generate=lambda *args, **kwargs: [],
+            tokenize=lambda *args, **kwargs: {"test": [[(123, 1, 0), (456, 1, 0)]]},
+            decode=lambda ids: "decoded",
+        )
+        with self.assertRaisesRegex(RuntimeError, "tokenizer bound 0"):
+            scope["NativeLLMAPITextGenerate"].execute(
+                clip=text_only_clip, prompt="", max_length=32,
+                sampling_mode={"sampling_mode": "off"}, request_id="id",
+            )
+        self.assertEqual(calls[-1][1]["stage"], "tokenizer_missing_images")
+
 
 if __name__ == "__main__":
     unittest.main()
