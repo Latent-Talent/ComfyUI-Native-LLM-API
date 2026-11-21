@@ -5,7 +5,7 @@ WEB_DIRECTORY = "./web"
 
 from comfy_api.latest import io
 from comfy_extras.nodes_textgen import TextGenerateV2
-from .streaming import native_capture, lookup, StopAtSequence, GenerationCancelled, count_bound_images, set_vision_status
+from .streaming import native_capture, lookup, StopAtSequence, GenerationCancelled, count_bound_images, set_vision_status, _prompt_token_count
 from . import kernel_fallback
 from . import image_context as ic
 
@@ -49,7 +49,6 @@ class NativeLLMAPITextGenerate(TextGenerateV2):
         def capturing_tokenize(*args, **kwargs):
             tokens = original_tokenize(*args, **kwargs)
             if session is not None:
-                from .streaming import _prompt_token_count
                 count = _prompt_token_count(tokens)
                 expected = len(session.images)
                 bound = count_bound_images(tokens) if expected else 0
