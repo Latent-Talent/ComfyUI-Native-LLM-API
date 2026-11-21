@@ -52,6 +52,7 @@ class NativeVisionBridgeTests(unittest.TestCase):
             "lookup": lambda rid: session if rid == "id" else None,
             "ic": types.SimpleNamespace(image_tensors=convert),
             "count_bound_images": native_streaming.count_bound_images,
+            "_prompt_token_count": native_streaming._prompt_token_count,
             "set_vision_status": lambda *args, **kwargs: calls.append(("vision", kwargs)),
             "native_capture": NoopCapture,
             "kernel_fallback": types.SimpleNamespace(install=lambda: None),
