@@ -16,6 +16,7 @@ from . import streaming
 from . import sillytavern as st
 from . import image_context as ic
 from . import vision_support as vs
+from . import http_json
 
 LOG = logging.getLogger("native_llm_api")
 PREFIX = "/native_llm_api"
@@ -468,15 +469,16 @@ async def _stream_response(request, prompt_id, model, response_id, created, chat
 async def inference(request, chat):
     settings = config.read()
     authed(request, settings)
-    # Read with a strict limit: ComfyUI's default aiohttp JSON body limit is
-    # too small for SillyTavern's base64 quietImage first-frame payload.
-    # Request.content.read() avoids altering the global ComfyUI body limit.
-    raw = await request.content.read(ic.MAX_REQUEST_BYTES + 1)
-    if len(raw) > ic.MAX_REQUEST_BYTES:
+    # SillyTavern's base64 first-frame payload can span many network chunks.
+    # StreamReader.read(n) returns up to n bytes, NOT necessarily the entire
+    # body; a single read silently truncated large requests before JSON parse.
+    if request.content_length is not None and request.content_length > ic.MAX_REQUEST_BYTES:
         raise APIError(413, "Chat request exceeds 48 MiB image/context limit")
     try:
-        body = json.loads(raw)
-    except (ValueError, TypeError, UnicodeDecodeError) as exc:
+        body = await http_json.read_json_body(request.content, ic.MAX_REQUEST_BYTES)
+    except http_json.RequestTooLarge as exc:
+        raise APIError(413, "Chat request exceeds 48 MiB image/context limit") from exc
+    except http_json.InvalidRequestJSON as exc:
         raise APIError(400, "Invalid JSON request body") from exc
     model, prompt, effective, stops, metadata = _validate_body(body, settings, chat)
     image_urls = metadata.pop("image_urls", [])
