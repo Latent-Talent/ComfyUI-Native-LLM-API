@@ -27,7 +27,7 @@ Requests to `/v1/*` require `Authorization: Bearer <API key>`. Inference is queu
 - Qwen3.5/Qwen3.8 chat-family checkpoints use native role markers for multi-turn conversations. Other native text encoders receive a role-labelled transcript wrapped in their own template; exact multi-turn semantics depend on tokenizer.
 - **Best-effort function calling:** OpenAI function/tool descriptions are included in the native prompt. The model must generate function-call JSON that is parsed into OpenAI tool_calls; function-call responses are buffered until complete, even with stream=true. No guarantee of schema adherence, and functions are never executed by this server.
 - **JSON object mode:** response_format={"type":"json_object"} uses prompting and validates the complete result. This is not constrained decoding and does not guarantee a valid object on the first attempt.
-- No logprobs, strict JSON Schema constrained decoding, image input, embeddings or reranking. Unsupported requested features return errors.
+- No logprobs, strict JSON Schema constrained decoding, embeddings or reranking. Images require a supported native vision checkpoint; unsupported models are explicitly rejected.
 - ComfyUI itself is commonly unauthenticated. The API key protects the `/v1` routes but does not secure the ComfyUI web UI or custom-node admin settings. Do not expose ComfyUI directly to the public Internet.
 - `stop` strings are detected after committed native tokens are decoded; when encountered, native generation is interrupted at the next progress update (with native cleanup). Stops are also trimmed from the final text.
 - Prompt and completion usage counts are derived from the native tokenizer input and accepted generated token IDs. For text-only requests they are included in regular replies and optionally in the final SSE usage chunk.
@@ -62,3 +62,42 @@ GitHub Actions runs Python syntax checks, JavaScript syntax checks, settings tes
 - For a known W4A8 ConvRot CUDA shared-memory launch error (`convrot fused kernel shared memory request`), API inference retries through Comfy Kitchen’s existing two-pass rotation/INT8 quantization and chunked W4A8 GEMM backend. Other error types are not swallowed. The fallback applies only during API inference, preserves quantized weights and native ComfyUI memory management, and may be slower than a working fused kernel. **It requires a Kitchen version with `w4a8_codebook_gemm_chunked`; upgrade ComfyUI and Kitchen if your version lacks it.**
 - API user messages, system instructions and assistant completions are not written into ComfyUI queue input or history. They are held in a request-scoped Python memory session and released when the request ends. ComfyUI history receives only a request identifier and a `completed` status. The model still processes the message in RAM/VRAM; OpenAI API clients receive the answer. This is not a general-purpose disabling of ComfyUI or system-wide logging, nor does it retroactively delete earlier history entries.
 - API client output is available only during the HTTP request. If the client disconnects or generation times out, the private session is released and no chat text persists in the native ComfyUI prompt history.
+
+## SillyTavern video-generator: first-frame image context
+
+The **Prepare Video Prompt → Include first frame with LLM request** setting
+uses SillyTavern's `generateQuietPrompt({ quietPrompt, quietImage })` mechanism.
+SillyTavern attaches `quietImage` to the **system-role** quiet prompt as an
+OpenAI `image_url` content part:
+
+```json
+{"type":"image_url","image_url":{"url":"data:image/png;base64,...","detail":"high"}}
+```
+
+This API accepts that shape, including system-role images. It also accepts
+standard user-role image parts, JPEG/PNG/WebP data URLs, and public HTTPS URLs.
+SillyTavern typically converts locally hosted images into embedded data URLs
+before sending the request.
+
+- **Checked:** The prompt text, RP conversation, and first-frame image are
+  passed to the native vision tokenizer. The first image is associated with
+  `<Picture 1>` and an actual image embedding token. Subsequent images are
+  `<Picture 2>`, etc., in original content order.
+- **Unchecked:** No image part reaches the LLM. The first-frame image
+  remains available to the separate ComfyUI video-generation workflow.
+- The API preserves, without alteration, the video generator's instructions
+  defining `<Picture 1>` as the exact FIRST FRAME. It leaves image/RP
+  precedence, scene continuity, and subsequent action to those instructions.
+- Native vision-capable Qwen3.5/Qwen3.8 and Gemma4 checkpoints are supported.
+  Text-only models must not be presented as vision-capable.
+- The endpoint returns **text descriptions/prompts**, not rendered video.
+
+Media data remains in request-scoped RAM and never enters ComfyUI prompt
+graph inputs, outputs, or `/history`. Per request limits: eight still frames,
+32 MiB total compressed media and 16 megapixels total. HTTPS image URLs
+must resolve exclusively to public IPs and return an image directly without
+redirects; local/private URLs and animated images are refused.
+
+**SillyTavern setting:** Enable inline-image sending for the Custom
+OpenAI-compatible Chat Completion model. The video generator's own checkbox
+still independently controls whether quiet LLM generation includes the image.
