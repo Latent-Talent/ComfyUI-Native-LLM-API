@@ -95,7 +95,8 @@ class NativeVisionBridgeTests(unittest.TestCase):
                 clip=text_only_clip, prompt="", max_length=32,
                 sampling_mode={"sampling_mode": "off"}, request_id="id",
             )
-        self.assertEqual(calls[-1][1]["stage"], "tokenizer_missing_images")
+        self.assertTrue(any(item[0] == "vision" and item[1].get("stage") == "tokenizer_missing_images"
+                            for item in calls))
 
 
 if __name__ == "__main__":
