@@ -212,6 +212,8 @@ app.registerExtension({
             const rotate = element("button", actions, "Rotate API key");
             const free = element("button", actions, "Unload models");
             const status = element("div", form, "", "hint");
+            const visionStatus = element("div", form, "", "hint");
+            const refreshVision = element("button", actions, "Check image status");
             element("div", form, "Requests use ComfyUI's queue and native memory management. Accepted native tokens stream incrementally via SSE; MTP commits may arrive in batches. Function calls are buffered for JSON validation.", "hint");
             element("div", form, "Security: keep ComfyUI behind a trusted LAN or VPN. The API key does not secure ComfyUI's other endpoints.", "hint");
 
@@ -244,8 +246,12 @@ app.registerExtension({
               try {
                 const s = await request("/native_llm_api/status");
                 status.textContent = `API active: ${s.active_api_requests} · ComfyUI running: ${s.comfy_running} · Queued: ${s.comfy_pending}`;
+                const v = s.last_vision_request || {};
+                visionStatus.textContent =
+                  `Last API request: ${v.stage || "unknown"} · Images received: ${v.image_parts ?? 0} · Decoded: ${v.decoded_images ?? 0} · Native embeddings: ${v.embedded_images ?? 0} · Vision weights: ${v.checkpoint_vision || "not_checked"}`;
               } catch { status.textContent = "Status unavailable"; }
             };
+            refreshVision.onclick = check;
             check();
             setNotice("Ready");
           } catch (err) { setNotice("Unable to load: " + err.message, true); }
