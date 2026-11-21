@@ -1,10 +1,15 @@
 """Prove the native worker receives private first-frame image tensors, not graph payloads."""
 import ast
 import types
+import threading
+import importlib.util
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location("native_test_streaming", ROOT / "streaming.py")
+native_streaming = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(native_streaming)
 
 
 class NativeVisionBridgeTests(unittest.TestCase):
@@ -16,6 +21,9 @@ class NativeVisionBridgeTests(unittest.TestCase):
         session = types.SimpleNamespace(
             prompt="The supplied <Picture 1> is the exact FIRST FRAME.",
             images=[b"opaque compressed frame bytes"],
+            images_bound=0,
+            lock=threading.Lock(),
+            prompt_tokens=None,
             finish=lambda *a, **kw: calls.append(("finish", a)),
             fail=lambda *a, **kw: calls.append(("fail", a)),
         )
@@ -24,6 +32,7 @@ class NativeVisionBridgeTests(unittest.TestCase):
             @classmethod
             def execute(cls, **kwargs):
                 calls.append(("execute", kwargs))
+                kwargs["clip"].tokenize(kwargs["prompt"], images=kwargs["images"])
                 return ("completed prompt", "")
 
         class NoopCapture:
@@ -42,6 +51,8 @@ class NativeVisionBridgeTests(unittest.TestCase):
             "TextGenerateV2": StubTextGenerate,
             "lookup": lambda rid: session if rid == "id" else None,
             "ic": types.SimpleNamespace(image_tensors=convert),
+            "count_bound_images": native_streaming.count_bound_images,
+            "set_vision_status": lambda *args, **kwargs: calls.append(("vision", kwargs)),
             "native_capture": NoopCapture,
             "kernel_fallback": types.SimpleNamespace(install=lambda: None),
             "io": types.SimpleNamespace(NodeOutput=lambda *args: args),
@@ -52,7 +63,7 @@ class NativeVisionBridgeTests(unittest.TestCase):
                      str(ROOT / "__init__.py"), "exec"), scope)
         clip = types.SimpleNamespace(
             generate=lambda *args, **kwargs: [],
-            tokenize=lambda *args, **kwargs: {},
+            tokenize=lambda *args, **kwargs: {"test": [[({"type": "image", "data": "pixels"}, 1, 0)]]},
             decode=lambda ids: "decoded",
         )
         orig_generate, orig_tokenize = clip.generate, clip.tokenize
@@ -64,7 +75,9 @@ class NativeVisionBridgeTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "execute")
         self.assertEqual(calls[0][1]["prompt"], session.prompt)
         self.assertEqual(calls[0][1]["images"], {"image1": "PRIVATE_IMAGE_TENSOR"})
-        self.assertEqual(calls[-1][0], "finish")
+        self.assertEqual(calls[-2][0], "finish")
+        self.assertEqual(calls[-1][1]["stage"], "completed_with_vision")
+        self.assertEqual(session.images_bound, 1)
         self.assertIs(clip.generate, orig_generate)
         self.assertIs(clip.tokenize, orig_tokenize)
 
