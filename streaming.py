@@ -13,6 +13,60 @@ import time
 LOG = logging.getLogger("native_llm_api.streaming")
 REGISTRY = {}
 _REGISTRY_LOCK = threading.RLock()
+# Ephemeral, sanitized last-request diagnostics. No prompt text, URLs, pixels or
+# output text are recorded. Updated by the HTTP handler and native worker.
+_LAST_VISION = {
+    "image_parts": 0, "decoded_images": 0, "embedded_images": 0,
+    "checkpoint_vision": "not_checked", "stage": "no_requests",
+}
+_LAST_VISION_REQUEST = None
+
+
+def set_vision_status(request_id, **fields):
+    global _LAST_VISION_REQUEST
+    allowed = {"image_parts", "decoded_images", "embedded_images",
+               "checkpoint_vision", "stage"}
+    with _REGISTRY_LOCK:
+        if _LAST_VISION_REQUEST != request_id:
+            _LAST_VISION_REQUEST = request_id
+            _LAST_VISION.clear()
+            _LAST_VISION.update({
+                "image_parts": 0, "decoded_images": 0, "embedded_images": 0,
+                "checkpoint_vision": "not_checked", "stage": "received",
+            })
+        _LAST_VISION.update({key: value for key, value in fields.items() if key in allowed})
+
+
+def latest_vision_status():
+    with _REGISTRY_LOCK:
+        return dict(_LAST_VISION)
+
+
+def count_bound_images(tokens):
+    """Count actual native vision embeddings, not placeholder strings.
+
+    Qwen3.5 and Gemma4 replace image token IDs with a dictionary describing
+    an image embedding. Text-only token streams contain only numeric IDs.
+    """
+    if isinstance(tokens, dict):
+        sequences = tokens.values()
+    elif isinstance(tokens, list):
+        sequences = [tokens]
+    else:
+        return 0
+    count = 0
+    for batches in sequences:
+        if not isinstance(batches, list):
+            continue
+        for sequence in batches:
+            if not isinstance(sequence, list):
+                continue
+            for token in sequence:
+                if (isinstance(token, tuple) and token
+                        and isinstance(token[0], dict)
+                        and token[0].get("type") == "image"):
+                    count += 1
+    return count
 _THREAD = threading.local()
 _INSTALLED = False
 
@@ -42,6 +96,7 @@ class CaptureSession:
         # The sensitive request lives only in process memory; never in ComfyUI's prompt graph/history.
         self.prompt = None
         self.images = []  # Compressed private still frames; never serialized in ComfyUI workflows.
+        self.images_bound = 0
         self.thinking = thinking
         self.stops = tuple(stops)
         self.lock = threading.Lock()
@@ -114,6 +169,7 @@ class CaptureSession:
                 "completion_tokens": self.completion_tokens, "prompt_tokens": self.prompt_tokens,
                 "done": self.done, "finish_reason": self.finish_reason, "error": self.error,
                 "generation_completed": self.generation_completed,
+                "images_bound": self.images_bound,
             }
 
 def register(request_id, thinking=False, stops=()):
