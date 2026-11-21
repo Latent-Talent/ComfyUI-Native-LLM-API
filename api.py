@@ -14,6 +14,7 @@ import execution
 from . import native_llm_config as config
 from . import streaming
 from . import sillytavern as st
+from . import image_context as ic
 
 LOG = logging.getLogger("native_llm_api")
 PREFIX = "/native_llm_api"
@@ -126,7 +127,12 @@ def _validate_body(body, settings, chat):
         instructions = st.tool_instructions(tools, tool_choice)
         if response_format["type"] == "json_object":
             instructions += "\nReturn exactly one valid JSON object without markdown."
-        prompt = render_chat(body.get("messages"), model, effective["thinking"], extra_system=instructions)
+        image_urls = []
+        prompt = render_chat(body.get("messages"), model, effective["thinking"],
+                             extra_system=instructions, image_urls=image_urls)
+        if image_urls and not any(x in model.lower() for x in
+                ("qwen35", "qwen3.5", "qwen38", "qwen3.8", "gemma4")):
+            raise APIError(400, "Selected model is not recognized as a native vision-capable model")
     else:
         prompt = body.get("prompt")
         if not isinstance(prompt, str):
@@ -147,14 +153,23 @@ def _validate_body(body, settings, chat):
     if response_format["type"] == "json_object" and tool_choice != "none":
         raise APIError(400, "json_object mode and tools cannot be combined")
     metadata = {"tools": tools, "tool_choice": tool_choice, "format": response_format["type"],
+                "image_urls": image_urls if chat else [],
                 "include_usage": bool(stream_opts and stream_opts.get("include_usage")),
                 "include_reasoning": body.get("include_reasoning", True) is not False}
     return model, prompt, effective, stops, metadata
 
-def render_chat(messages, model, thinking=False, extra_system=""):
+def render_chat(messages, model, thinking=False, extra_system="", image_urls=None):
+    """Preserve RP history and interleaved image positions for native vision.
+
+    SillyTavern's quietImage is an OpenAI image_url content part. We represent
+    the associated first frame as <Picture 1> + a real native vision token;
+    the source image itself remains private, outside ComfyUI's workflow JSON.
+    """
     if not isinstance(messages, list) or not messages or len(messages) > 256:
         raise APIError(400, "messages must be a nonempty array of at most 256 messages")
     parsed = []
+    model_lower = model.lower()
+    is_gemma4 = "gemma4" in model_lower
     for message in messages:
         if not isinstance(message, dict):
             raise APIError(400, "Each message must be an object")
@@ -167,12 +182,37 @@ def render_chat(messages, model, thinking=False, extra_system=""):
         if isinstance(content, list):
             parts = []
             for item in content:
-                if not isinstance(item, dict) or item.get("type") != "text" or not isinstance(item.get("text"), str):
-                    raise APIError(400, "Only text message parts are supported")
-                parts.append(item["text"])
+                if not isinstance(item, dict):
+                    raise APIError(400, "Invalid message content part")
+                if item.get("type") == "text":
+                    if not isinstance(item.get("text"), str):
+                        raise APIError(400, "Text part must contain a string")
+                    parts.append(item["text"])
+                    continue
+                if item.get("type") in ("image_url", "input_image"):
+                    if role not in ("user", "assistant"):
+                        raise APIError(400, "Image context must be in user or assistant messages")
+                    if image_urls is None:
+                        raise APIError(400, "Image context is unavailable in this request")
+                    if len(image_urls) >= ic.MAX_IMAGES:
+                        raise APIError(400, "Maximum eight images per request")
+                    try:
+                        image_url = ic.parse_image_url(item)
+                    except ic.ImageContextError as exc:
+                        raise APIError(400, str(exc)) from exc
+                    image_urls.append(image_url)
+                    index = len(image_urls)
+                    # The supplied first-frame instructions refer to <Picture 1>.
+                    # Keep the exact user text; attach the picture marker beside
+                    # the actual vision embedding in order of message parts.
+                    vision_token = ("<|image><|image|><image|>" if is_gemma4
+                                    else "<|vision_start|><|image_pad|><|vision_end|>")
+                    parts.append(f"\n<Picture {index}> {vision_token}\n")
+                    continue
+                raise APIError(400, "Only text and image_url message parts are supported")
             content = "\n".join(parts)
         if not isinstance(content, str):
-            raise APIError(400, "Message content must be text")
+            raise APIError(400, "Message content must be text or an array of text/image parts")
         if message.get("tool_calls"):
             content += "\nPrevious function calls: " + json.dumps(message["tool_calls"], ensure_ascii=False)
         if role in ("tool", "function"):
@@ -181,12 +221,17 @@ def render_chat(messages, model, thinking=False, extra_system=""):
         parsed.append((role, content))
     if extra_system:
         parsed.insert(0, ("system", extra_system))
-    # Qwen3.5 native tokenizer recognizes this prefix and does not wrap it a second time.
-    if "qwen35" in model.lower() or "qwen3.5" in model.lower() or "qwen38" in model.lower() or "qwen3.8" in model.lower():
-        messages_text = "".join(f"<|im_start|>{'system' if r == 'developer' else r}\n{v}<|im_end|>\n" for r, v in parsed)
-        messages_text += "<|im_start|>assistant\n"
-        messages_text += "<think>\n" if thinking else "<think>\n\n</think>\n\n"
-        return messages_text
+    if is_gemma4:
+        def gemma_role(role):
+            return "model" if role == "assistant" else "system" if role == "developer" else "user" if role == "tool" else role
+        formatted = "".join(f"<|turn>{gemma_role(role)}\n{value}<turn|>\n" for role, value in parsed)
+        return formatted + "<|turn>model\n"
+    if any(marker in model_lower for marker in ("qwen35", "qwen3.5", "qwen38", "qwen3.8")):
+        formatted = "".join(f"<|im_start|>{'system' if r == 'developer' else r}\n{v}<|im_end|>\n"
+                            for r, v in parsed)
+        formatted += "<|im_start|>assistant\n"
+        formatted += "<think>\n" if thinking else "<think>\n\n</think>\n\n"
+        return formatted
     return "\n\n".join(f"{r.upper()}:\n{v}" for r, v in parsed) + "\n\nASSISTANT:\n"
 
 def make_prompt(model, prompt, options, request_id):
@@ -415,11 +460,22 @@ async def _stream_response(request, prompt_id, model, response_id, created, chat
 async def inference(request, chat):
     settings = config.read()
     authed(request, settings)
+    # Read with a strict limit: ComfyUI's default aiohttp JSON body limit is
+    # too small for SillyTavern's base64 quietImage first-frame payload.
+    # Request.content.read() avoids altering the global ComfyUI body limit.
+    raw = await request.content.read(ic.MAX_REQUEST_BYTES + 1)
+    if len(raw) > ic.MAX_REQUEST_BYTES:
+        raise APIError(413, "Chat request exceeds 48 MiB image/context limit")
     try:
-        body = await request.json()
-    except (ValueError, TypeError) as exc:
+        body = json.loads(raw)
+    except (ValueError, TypeError, UnicodeDecodeError) as exc:
         raise APIError(400, "Invalid JSON request body") from exc
     model, prompt, effective, stops, metadata = _validate_body(body, settings, chat)
+    image_urls = metadata.pop("image_urls", [])
+    try:
+        images = await ic.resolve_images(image_urls)
+    except ic.ImageContextError as exc:
+        raise APIError(400, str(exc)) from exc
     rid = str(uuid.uuid4())
     async with _PENDING_LOCK:
         if len(_PENDING) >= settings["max_pending"]:
@@ -431,6 +487,7 @@ async def inference(request, chat):
     try:
         session = streaming.register(rid, thinking=effective["thinking"], stops=stops)
         session.prompt = prompt
+        session.images = images
         prompt_id = await submit(make_prompt(model, prompt, effective, rid))
         created = int(time.time())
         response_id = ("chatcmpl-" if chat else "cmpl-") + rid
