@@ -3,6 +3,8 @@ import ast
 import importlib.util
 import json
 import secrets
+import base64
+import io
 import types
 import unittest
 from pathlib import Path
@@ -21,9 +23,10 @@ def load(name, file):
     return mod
 
 compat = load("native_contract_compat", "sillytavern.py")
+vision = load("native_contract_images", "image_context.py")
 config = load("native_contract_config", "native_llm_config.py")
 scope = {"json": json, "secrets": secrets, "st": compat,
-         "config": config, "models": lambda: ["Qwen3.5-9B.safetensors", "gemma4.safetensors"]}
+         "config": config, "ic": vision, "models": lambda: ["Qwen3.5-9B.safetensors", "gemma4.safetensors", "other-model.safetensors"]}
 exec(compile(subset, str(ROOT / "api.py"), "exec"), scope)
 validate = scope["_validate_body"]
 workflow = scope["make_prompt"]
@@ -101,6 +104,80 @@ class APITests(unittest.TestCase):
         }, self.settings, True)
         self.assertEqual(stops, [])
         self.assertEqual(metadata["format"], "json_object")
+
+    def test_sillytavern_quiet_image_first_frame(self):
+        # SillyTavern generateQuietPrompt({quietPrompt, quietImage}) attaches
+        # the image via Message.addImage() to a SYSTEM quiet prompt.
+        # Preserve the user's exact first-frame continuity instructions.
+        continuity = (
+            "The supplied <Picture 1> is the exact FIRST FRAME of the target video. "
+            "Prioritize the image for visible starting conditions and the RP chat "
+            "for narrative intentions and subsequent behavior. "
+            "Do not reset or reconstruct the first frame."
+        )
+        image = "data:image/png;base64,QUJD"
+        body = {
+            "messages": [
+                {"role": "system", "content": "RP and character context"},
+                {"role": "user", "content": "They walk through a hall."},
+                {"role": "system", "content": [
+                    {"type": "text", "text": continuity},
+                    {"type": "image_url", "image_url": {
+                        "url": image, "detail": "high",
+                    }},
+                ]},
+            ],
+            "stream": True,
+        }
+        model, prompt, options, stops, metadata = validate(body, self.settings, True)
+        self.assertIn(continuity, prompt)
+        self.assertIn("<|im_start|>system", prompt)
+        self.assertIn("<Picture 1>", prompt)
+        self.assertEqual(prompt.count("<|image_pad|>"), 1)
+        self.assertLess(prompt.index(continuity), prompt.index("<|image_pad|>"))
+        self.assertNotIn(image, prompt)
+        self.assertEqual(metadata["image_urls"], [image])
+        graph = workflow(model, prompt, options, "request-id")
+        self.assertEqual(graph["2"]["inputs"]["prompt"], "")
+        self.assertNotIn("QUJD", json.dumps(graph))
+        self.assertNotIn(continuity, json.dumps(graph))
+
+    def test_quiet_image_disabled_stays_text_only(self):
+        instructions = "Continue from <Picture 1> as the exact first frame."
+        body = {"messages": [{"role": "system", "content": instructions}]}
+        model, prompt, options, stops, metadata = validate(body, self.settings, True)
+        self.assertEqual(metadata["image_urls"], [])
+        self.assertEqual(prompt.count("<|image_pad|>"), 0)
+        self.assertIn(instructions, prompt)
+
+    def test_multiple_images_preserve_order_and_gemma_tokens(self):
+        model = "gemma4.safetensors"
+        body = {"model": model, "messages": [
+            {"role": "system", "content": "Keep continuity."},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": "data:image/png;base64,QUJD"},
+                {"type": "text", "text": "Now see <Picture 2>"},
+                {"type": "image_url", "image_url": {
+                    "url": "data:image/jpeg;base64,REVG", "detail": "low",
+                }},
+            ]},
+        ]}
+        _, prompt, _, _, metadata = validate(body, self.settings, True)
+        self.assertTrue(prompt.startswith("<|turn>system"))
+        self.assertIn("<Picture 1>", prompt)
+        self.assertIn("<Picture 2>", prompt)
+        self.assertEqual(prompt.count("<|image><|image|><image|>"), 2)
+        self.assertEqual(metadata["image_urls"], [
+            "data:image/png;base64,QUJD", "data:image/jpeg;base64,REVG",
+        ])
+
+    def test_unsupported_model_with_image_is_rejected(self):
+        with self.assertRaisesRegex(scope["APIError"], "vision-capable"):
+            validate({"model": "other-model.safetensors",
+                      "messages": [{"role": "user", "content": [
+                          {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
+                      ]}]},
+                     {**self.settings, "model": "other-model.safetensors"}, True)
 
     def test_invalid_inputs_fail(self):
         cases = [
