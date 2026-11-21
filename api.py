@@ -15,6 +15,7 @@ from . import native_llm_config as config
 from . import streaming
 from . import sillytavern as st
 from . import image_context as ic
+from . import vision_support as vs
 
 LOG = logging.getLogger("native_llm_api")
 PREFIX = "/native_llm_api"
@@ -63,7 +64,8 @@ async def status(request):
     instance = PromptServer.instance
     running, queued = instance.prompt_queue.get_current_queue_volatile()
     return web.json_response({"active_api_requests": len(_PENDING), "comfy_running": len(running),
-                              "comfy_pending": len(queued), "model": config.read()["model"]})
+                              "comfy_pending": len(queued), "model": config.read()["model"],
+                              "last_vision_request": streaming.latest_vision_status()})
 
 async def free(request):
     # Asynchronous flag observed by ComfyUI's worker; avoid unloading an active model directly.
@@ -307,9 +309,12 @@ async def cancel(prompt_id):
     if not ps.prompt_queue.interrupt_if_running(prompt_id):
         ps.prompt_queue.delete_queue_item(lambda item: item[1] == prompt_id)
 
-async def await_output(prompt_id, timeout, request):
+async def await_output(prompt_id, timeout, request, request_id=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        snap = streaming.lookup(request_id).snapshot() if request_id else None
+        if snap and snap.get("error", "").startswith("Native vision tokenization failed"):
+            raise APIError(422, snap["error"], code="model_vision_unavailable")
         output = get_output(prompt_id)
         if output is not None:
             return output
@@ -474,11 +479,24 @@ async def inference(request, chat):
         raise APIError(400, "Invalid JSON request body") from exc
     model, prompt, effective, stops, metadata = _validate_body(body, settings, chat)
     image_urls = metadata.pop("image_urls", [])
+    rid = str(uuid.uuid4())
+    streaming.set_vision_status(rid, start=True, image_parts=len(image_urls),
+                                stage="image_received" if image_urls else "text_only")
     try:
         images = await ic.resolve_images(image_urls)
     except ic.ImageContextError as exc:
+        streaming.set_vision_status(rid, stage="image_rejected")
         raise APIError(400, str(exc)) from exc
-    rid = str(uuid.uuid4())
+    if images:
+        streaming.set_vision_status(rid, decoded_images=len(images), stage="images_decoded")
+        weight_state, reason = vs.inspect_checkpoint(model, folder_paths.get_full_path)
+        streaming.set_vision_status(rid, checkpoint_vision=weight_state)
+        if weight_state == "missing":
+            streaming.set_vision_status(rid, stage="checkpoint_missing_vision")
+            raise APIError(422,
+                "Image supplied, but selected checkpoint has no visual-encoder weights. "
+                "Use a full multimodal Qwen/Gemma checkpoint instead of a text-only quantization.",
+                code="model_vision_unavailable")
     async with _PENDING_LOCK:
         if len(_PENDING) >= settings["max_pending"]:
             raise APIError(429, "Native LLM API queue is full", "rate_limit_error")
@@ -498,7 +516,7 @@ async def inference(request, chat):
                                             chat, session, stops, metadata, settings["timeout_seconds"])
             succeeded = True
             return result
-        result = await await_output(prompt_id, settings["timeout_seconds"], request)
+        result = await await_output(prompt_id, settings["timeout_seconds"], request, rid)
         content, reasoning = result
         if session.snapshot()["finish_reason"] is None:
             session.finish(content, reasoning, max_tokens=effective["max_tokens"])
